@@ -10,8 +10,9 @@
 	       (:file "context" :depends-on ("packages"))
 	       (:file "serialization" :depends-on ("packages"))
 	       (:file "tls" :depends-on ("serialization"))
+	       (:file "record" :depends-on ("packages"))
 	       (:file "messages" :depends-on ("packages" "constants")))
-  :in-order-to ((test-op (test-op "tls-1.3/tests")))
+  :in-order-to ((test-op (test-op "tls-1.3/test")))
   :description "A lightweight minimal tls1.3 library that is easy to integrate.")
 
 (defsystem "tls-1.3/test"
