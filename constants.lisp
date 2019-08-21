@@ -51,7 +51,6 @@
 (defconstant +KEY-UPDATE+ 24)
 (defconstant +MESSAGE-HASH+ 254)
 
-
 (defconstant +rsa-pkcs1-sha256+ #x0401)
 (defconstant +rsa-pkcs1-sha384+ #x0501)
 (defconstant +rsa-pkcs1-sha512+ #x0601)

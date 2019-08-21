@@ -3,10 +3,7 @@
 (eval-when (:compile-toplevel :load-toplevel :execute)
 (defun slot->binding (spec stream)
   (destructuring-bind (name (type &rest args)) (normalize-slot-spec spec)
-    `(,name (progn
-	      (let ((val (read-value ',type ,stream ,@args)))
-		(format t "read slot ~a of type ~a with value ~a~%" ',name ',type val)
-		val)))))
+    `(,name (read-value ',type ,stream ,@args))))
 
 (defun slot->keyword-arg (spec)
   (let ((name (first spec)))
@@ -14,7 +11,9 @@
 
 (defun slot->defclass-slot (slot)
   (let ((name (first slot)))
-    `(,name :initarg ,(intern (symbol-name name) :keyword) :accessor ,name)))
+    `(,name :initarg ,(intern (symbol-name name) :keyword)
+	    :accessor ,name
+	    :initform ,(getf slot :initform))))
 
 (defun normalize-slot-spec (spec)
   (list (first spec) (mklist (second spec))))
@@ -91,27 +90,18 @@
   (:reader (in)
 	   (loop with value = 0
 	      for low-bit downfrom (* bits-per-byte (1- bytes)) to 0 by bits-per-byte
-	      do (setf (ldb (byte bits-per-byte low-bit) value) (read-byte in))
+	      do (setf (ldb (byte bits-per-byte low-bit) value)
+		       (ring-buffer-read-byte in))
 	      finally (return value)))
   (:writer (out value)
 	   (loop for low-bit downfrom (* bits-per-byte (1- bytes)) to 0 by bits-per-byte
-	      do (write-byte (ldb (byte bits-per-byte low-bit) value) out))))
+	      do (ring-buffer-write-byte out (ldb (byte bits-per-byte low-bit) value)))))
 
 (define-binary-type u8 () (unsigned-integer :bytes 1 :bits-per-byte 8))
 (define-binary-type u16 () (unsigned-integer :bytes 2 :bits-per-byte 8))
 (define-binary-type u24 () (unsigned-integer :bytes 3 :bits-per-byte 8))
 (define-binary-type u32 () (unsigned-integer :bytes 4 :bits-per-byte 8))
 (define-binary-type u64 () (unsigned-integer :bytes 8 :bits-per-byte 8))
-
-(define-binary-type binary-string (length element-type)
-  (:reader (in)
-	   (let ((array (make-array length)))
-	     (dotimes (i length)
-	       (setf (aref array i) (read-value element-type in)))
-	     array))
-  (:writer (out binstr)
-	   (dotimes (i length)
-	     (write-value element-type out (aref binstr i)))))
 
 (defmacro define-generic-binary-class (name (&rest superclasses) slots read-method)
   (with-gensyms (objectvar streamvar)
@@ -135,7 +125,6 @@
     `(define-generic-binary-class ,name ,superclasses ,slots
        (defmethod read-object progn ((,objectvar ,name) ,streamvar)
 	 (declare (ignorable ,streamvar))
-	 (format t "reading obj of type ~a~%" ',name)
 	 (with-slots ,(new-class-all-slots slots superclasses) ,objectvar
 	   ,@(mapcar #'(lambda (x) (slot->read-value x streamvar)) slots))))))
 
@@ -145,15 +134,10 @@
     `(define-generic-binary-class ,name ,superclasses ,slots
       (defmethod read-value ((,typevar (eql ',name)) ,streamvar &key)
 	(let* ,(mapcar #'(lambda (x) (slot->binding x streamvar)) slots)
-	  (format t "read-value of type ~a~%" ',name)
 	  (let ((,objectvar
 		 (make-instance
 		  ,@(or (cdr (assoc :dispatch options))
 			(error "Must supply :dispatch form."))
 		  ,@(mapcan #'slot->keyword-arg slots))))
-	    (format t "created object ~a~%" (type-of ,objectvar))
 	    (read-object ,objectvar ,streamvar)
 	    ,objectvar))))))
-
-
-
