@@ -1,5 +1,7 @@
 (in-package :tls)
 
+(defvar *mode*)
+
 (define-tagged-binary-class tls-record ()
   ((content-type u8 :initform +RECORD-INVALID+)
    (protocol-version u16 :initform +TLS-1.2+)
@@ -82,7 +84,7 @@
 (defun find-handshake-class (handshake-type)
   (ecase handshake-type
     (1 'client-hello)
-    (t 'generic-handshake)))
+    (2 'server-hello)))
 
 (define-binary-class generic-handshake (handshake)
   ((data (raw-bytes :size size))))
@@ -91,132 +93,66 @@
   (format t "size of ~a is = ~a~%" ext (slot-value ext 'size))
   (+ 2 2 (slot-value ext 'size)))
 
-(define-binary-class client-hello (handshake)
-  ((protocol-version u16 :initform +TLS-1.2+)
-   (random-bytes (raw-bytes :size 32) :initform
-		 (make-array 32 :element-type '(unsigned-byte 8) :initial-element 0))
-   (session-id (tls-list :size-type 'u8 :element-type 'u8 :element-size 1))
-   (ciphers (tls-list :size-type 'u16 :element-type 'u16 :element-size 2))
-   (compression (tls-list :size-type 'u8 :element-type 'u8 :element-size 1))
-   (extensions (tls-list :size-type 'u16
-			 :element-type 'tls-extension
-			 :element-size #'tls-extension-size))))
-
-#+todo-remove
-(define-binary-type tls-extensions ()
-  (:reader
-   (in)
-   (loop
-      with ext = nil
-      with how-many = (read-value 'u16 in)
-      do
-	(format t "~a bytes of tls extensions follow~%" how-many)
-      while (plusp how-many)
-      do
-	(setf ext (read-value 'tls-extension in))
-	(decf how-many (+ 4 (slot-value ext 'size)))
-      collect ext))
-  (:writer
-   (out val)
-   (error "not implemented")))
-
 (define-tagged-binary-class tls-extension ()
   ((extension-type u16)
    (size u16))
   (:dispatch
-   (find-extension-class extension-type)))
+   (case *mode*
+     (:CLIENT (find-client-extension-class extension-type))
+     (:SERVER (find-server-extension-class extension-type)))))
 
-(defun find-extension-class (extension-type)
+(defun find-client-extension-class (extension-type)
   (case extension-type
-    (0 'server-name-extension)
-    (10 'supported-groups-extension)
-    (13 'signature-scheme-extension)
+    (0 'server-name-ext)
+    (10 'supported-groups)
+    (13 'signature-schemes)
     (43 'client-supported-versions)
+    (44 'cookie)
+    (45 'psk-key-exchange-modes)
+    (51 'client-hello-key-share)
+    (otherwise 'generic-extension)))
+
+(defun find-server-extension-class (extension-type)
+  (case extension-type
+    (0 'server-name-ext)
+    (10 'supported-groups)
+    (13 'signature-schemes)
+    (43 'server-supported-versions)
     (44 'cookie-extension)
-    (45 'psk-key-exchange-modes-extension)
-    (51 'client-key-share-hello)
+    (45 'psk-key-exchange-modes)
+    (51 'server-hello-key-share)
     (otherwise 'generic-extension)))
 
 (define-binary-class generic-extension (tls-extension)
   ((data (raw-bytes :size size))))
 
-(define-binary-type protocol-versions ()
-  (:reader
-   (in)
-   (loop
-      with how-many = (read-value 'u8 in)
-      while (plusp how-many)
-      collect (read-value 'u16 in)
-      do (decf how-many 2)))
-  (:writer
-   (out versions)
-   (write-value 'u8 out (* 2 (length versions)))
-   (loop
-      for v in versions
-      do (write-value 'u16 out v))))
-
 (define-binary-class client-supported-versions (tls-extension)
-  ((versions protocol-versions)))
+  ((versions (tls-list :size-type 'u8
+		       :element-type 'u16
+		       :element-size 2))))
 
-(define-binary-class cookie-extension (tls-extension)
+(define-binary-class server-supported-versions (tls-extension)
+  ((version u16)))
+
+(define-binary-class cookie (tls-extension)
   ((bytes bytes)))
 
 (define-binary-class server-name ()
   ((name-type u8 :initform 0)
    (hostname (varbytes :size-type 'u16))))
 
-(define-binary-type server-names-list ()
-  (:reader
-   (in)
-   (loop
-      with how-many = (read-value 'u16 in)
-      with name = nil
-      do
-	(format t "~a bytes of server extension follow~%" how-many)
-      while (plusp how-many)
-      do
-	(setf name (read-value 'server-name in))
-	(decf how-many (+ 1 2 (length (slot-value name 'hostname))))
-      collect name))
-  (:writer
-   (out namelist)
-   (labels
-       ((get-host-lengths (x) (+ 1 2 (length (slot-value x 'hostname)))))
-     (let ((size (reduce #'+ (mapcar #'get-host-lengths namelist))))
-       (write-value 'u16 out size)
-       (loop for name in namelist
-	  do (write-value 'server-name out name))))))
+(defun server-name-size (x)
+  (+ 1 2 (length (slot-value x 'hostname))))
 
-(define-binary-class server-name-extension (tls-extension)
-  ((names server-names-list)))
+(define-binary-class server-name-ext (tls-extension)
+  ((names (tls-list :size-type 'u16
+		    :element-type 'server-name
+		    :element-size #'server-name-size))))
 
-(define-binary-class signature-scheme-extension (tls-extension)
+(define-binary-class signature-schemes (tls-extension)
   ((signature-schemes (tls-list :size-type 'u16
 				:element-type 'u16
 				:element-size 2))))
-
-#+todo-remove
-(define-binary-type key-share-list ()
-  (:reader
-   (in)
-   (labels
-       ((key-share-size (x) (+ 2 2 (length (slot-value x 'key-exchange)))))
-    (loop
-       with keyshare = nil
-       with how-many = (read-value 'u16 in)
-       while (plusp how-many)
-       do
-	 (setf keyshare (read-value 'key-share in))
-	 (decf how-many (key-share-size keyshare))
-       collect keyshare)))
-  (:writer
-   (out keys)
-   (labels
-       ((key-share-size (x) (+ 2 (length (slot-value x 'key-exchange)))))
-     (let ((size (reduce #'+ (mapcar #'key-share-size keys))))
-       (write-value 'u16 out size)
-       (loop for key in keys
-	  do (write-value 'key-share out key))))))
 
 (defun key-share-size (x)
   (+ 2 2 (length (slot-value x 'key-exchange))))
@@ -225,29 +161,18 @@
   ((named-group u16)
    (key-exchange (varbytes :size-type 'u16))))
 
-(define-binary-class client-key-share-hello (tls-extension)
+(define-binary-class client-hello-key-share (tls-extension)
   ((key-shares (tls-list :size-type 'u16
 			 :element-type 'key-share
 			 :element-size #'key-share-size))))
 
-#+todo-remove
-(define-binary-type named-group-list ()
-  (:reader
-   (in)
-   (loop
-      with how-many = (read-value 'u16 in)
-      while (plusp how-many)
-      collect (read-value 'u16 in)
-      do (decf how-many 2)))
-  (:writer
-   (out groups)
-   (write-value 'u16 out (* 2 (length groups)))
-   (loop for g in groups do (write-value 'u16 out g))))
+(define-binary-class server-hello-key-share (tls-extension)
+  ((key key-share)))
 
-(define-binary-class supported-groups-extension (tls-extension)
+(define-binary-class supported-groups (tls-extension)
   ((named-groups (tls-list :size-type 'u16 :element-type 'u16 :element-size 2))))
 
-(define-binary-class client-psk-key-exchange-extension (tls-extension)
+(define-binary-class client-psk-key-exchange (tls-extension)
   ((offered-psks offered-psks)))
 
 (define-binary-type psk-binder-list ()
@@ -275,34 +200,35 @@
 (defun psk-identity-size (x)
   (+ 2 4 (length (slot-value x 'psk-identity))))
 
-#+todo-remove
-(define-binary-type psk-identity-list ()
-  (:reader
-   (in)
-   (labels
-       ((identity-size (x) (+ 2 4 (length (slot-value x 'psk-identity)))))
-     (loop
-	with how-many = (read-value 'u16 in)
-	with identity = nil
-	while (plusp how-many)
-	do
-	  (setf identity (read-value 'psk-identity in))
-	  (decf how-many (identity-size identity))
-	collect identity)))
-  (:writer
-   (out ids)
-   (labels
-       ((identity-size (x) (+ 2 4 (length (slot-value x 'psk-identity)))))
-     (let ((size (reduce #'+ (mapcar #'identity-size ids))))
-       (write-value 'u16 out size)
-       (loop for i in ids do (write-value 'psk-identity out i))))))
-
 (define-binary-class offered-psks ()
   ((identities (tls-list :size-type 'u16 :element-type 'psk-identity
 			 :element-size #'psk-identity-size))
    (binders psk-binder-list)))
 
-(define-binary-class psk-key-exchange-modes-extension (tls-extension)
+(define-binary-class psk-key-exchange-modes (tls-extension)
   ((key-exchange-modes (tls-list :size-type 'u8
 				 :element-type 'u8
 				 :element-size 1))))
+
+
+(define-binary-class client-hello (handshake)
+  ((protocol-version u16 :initform +TLS-1.2+)
+   (random-bytes (raw-bytes :size 32) :initform
+		 (make-array 32 :element-type '(unsigned-byte 8) :initial-element 0))
+   (session-id (tls-list :size-type 'u8 :element-type 'u8 :element-size 1))
+   (ciphers (tls-list :size-type 'u16 :element-type 'u16 :element-size 2))
+   (compression (tls-list :size-type 'u8 :element-type 'u8 :element-size 1))
+   (extensions (tls-list :size-type 'u16
+			 :element-type 'tls-extension
+			 :element-size #'tls-extension-size))))
+
+(define-binary-class server-hello (handshake)
+  ((protocol-version u16 :initform +TLS-1.2+)
+   (random-bytes (raw-bytes :size 32)
+		 :initform (make-array 32 :element-type '(unsigned-byte 8) :initial-element 0))
+   (session-id (tls-list :size-type 'u8 :element-type 'u8 :element-size 1))
+   (selected-cipher u16)
+   (compression u8)
+   (extensions (tls-list :size-type 'u16
+			 :element-type 'tls-extension
+			 :element-size #'tls-extension-size))))

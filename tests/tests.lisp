@@ -3,7 +3,7 @@
 
 (in-package :tls/tests)
 
-(plan 2)
+(plan 3)
 
 (defun test-reading-of-client-hellos ()
   (let ((test-frame1 "1603010188010000c00303cb34ecb1e78163ba1c38c6dacb196a6dffa21a8d9912ec18a2ef6283024dece7000006130113031302010000910000000b0009000006736572766572ff01000100000a00140012001d0017001800190100010101020103010400230000003300260024001d002099381de560e4bd43d23d8e435a7dbafeb3c06e51c13cae4d5413691e529aaf2c002b0003020304000d0020001e040305030603020308040805080604010501060102010402050206020202002d00020101001c00024001")
@@ -11,14 +11,29 @@
 	(buf (make-ring-buffer 8192)))
     (ring-buffer-write-byte-sequence buf (ironclad:hex-string-to-byte-array test-frame2))
 
-    (let ((obj (tls::read-value 'tls::tls-record buf)))
-      (tls::write-value (type-of obj) buf obj)
-      (is (ironclad:byte-array-to-hex-string (ring-buffer-read-byte-sequence buf)) test-frame2))
+    (let ((tls::*mode* :CLIENT))
+     (let ((obj (tls::read-value 'tls::tls-record buf)))
+       (tls::write-value (type-of obj) buf obj)
+       (is (ironclad:byte-array-to-hex-string (ring-buffer-read-byte-sequence buf)) test-frame2)))
 
     (ring-buffer-write-byte-sequence buf (ironclad:hex-string-to-byte-array test-frame1))
-    (let ((obj (tls::read-value 'tls::tls-record buf)))
-      (tls::write-value (type-of obj) buf obj)
-      (is (ironclad:byte-array-to-hex-string (ring-buffer-read-byte-sequence buf)) test-frame1))))
+
+    (let ((tls::*mode* :CLIENT))
+      (let ((obj (tls::read-value 'tls::tls-record buf)))
+	(tls::write-value (type-of obj) buf obj)
+	(is (ironclad:byte-array-to-hex-string (ring-buffer-read-byte-sequence buf)) test-frame1)))))
+
+(defun test-reading-of-server-hellos ()
+  (let ((test-frame "160303007a020000760303707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f20e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff130100002e00330024001d00209fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615002b00020304")
+	(buf (make-ring-buffer 8192)))
+    (ring-buffer-write-byte-sequence buf (ironclad:hex-string-to-byte-array test-frame))
+
+    (let ((tls::*mode* :SERVER))
+      (let ((obj (tls::read-value 'tls::tls-record buf)))
+	(tls::write-value (type-of obj) buf obj)
+	(is (ironclad:byte-array-to-hex-string (ring-buffer-read-byte-sequence buf)) test-frame)))))
 
 (test-reading-of-client-hellos)
+
+(test-reading-of-server-hellos)
 (finalize)
