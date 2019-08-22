@@ -3,16 +3,22 @@
 
 (in-package :tls/tests)
 
-(plan 1)
+(plan 2)
 
-(defun test-reading-of-generic-frame ()
+(defun test-reading-of-client-hellos ()
   (let ((test-frame1 "1603010188010000c00303cb34ecb1e78163ba1c38c6dacb196a6dffa21a8d9912ec18a2ef6283024dece7000006130113031302010000910000000b0009000006736572766572ff01000100000a00140012001d0017001800190100010101020103010400230000003300260024001d002099381de560e4bd43d23d8e435a7dbafeb3c06e51c13cae4d5413691e529aaf2c002b0003020304000d0020001e040305030603020308040805080604010501060102010402050206020202002d00020101001c00024001")
 	(test-frame2 "16030100ca010000c60303000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff0006130113021303010000770000001800160000136578616d706c652e756c666865696d2e6e6574000a00080006001d00170018000d00140012040308040401050308050501080606010201003300260024001d0020358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254002d00020101002b0003020304")
 	(buf (make-ring-buffer 8192)))
     (ring-buffer-write-byte-sequence buf (ironclad:hex-string-to-byte-array test-frame2))
-    #+off(ring-buffer-write-byte-sequence buf (ironclad:hex-string-to-byte-array test-frame1))
-    (inspect (tls::read-value 'tls::tls-record buf))
-    #+off(inspect (tls::read-value 'tls::tls-record buf))    ))
 
-(test-reading-of-generic-frame)
+    (let ((obj (tls::read-value 'tls::tls-record buf)))
+      (tls::write-value (type-of obj) buf obj)
+      (is (ironclad:byte-array-to-hex-string (ring-buffer-read-byte-sequence buf)) test-frame2))
+
+    (ring-buffer-write-byte-sequence buf (ironclad:hex-string-to-byte-array test-frame1))
+    (let ((obj (tls::read-value 'tls::tls-record buf)))
+      (tls::write-value (type-of obj) buf obj)
+      (is (ironclad:byte-array-to-hex-string (ring-buffer-read-byte-sequence buf)) test-frame1))))
+
+(test-reading-of-client-hellos)
 (finalize)
