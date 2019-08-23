@@ -2,27 +2,27 @@
 
 (defvar *mode*)
 
-(define-tagged-binary-class tls-record ()
+(define-binary-class tls-record ()
   ((content-type u8 :initform +RECORD-INVALID+)
    (protocol-version u16 :initform +TLS-1.2+)
-   (size u16 :initform 0))
-  (:dispatch
-   (find-tls-record-class content-type)))
+   (len u16)))
 
-(defun find-tls-record-class (content-type)
-  (ecase content-type
+(defun get-record-content-type (rec)
+  (ecase (slot-value rec 'content-type)
     (20 'change-cipher-spec)
     (21 'alert)
-    (22 'handshake-record)
+    (22 'handshake)
     (23 'application-data)
     (24 'heartbeat)))
+
+(defun get-record-size (rec)
+  (slot-value rec 'len))
 
 (define-binary-type varbytes (size-type)
   (:reader
    (in)
    (loop
       with how-many = (read-value size-type in)
-      initially (format t "~a bytes of variable data remaining~%" how-many)
       while (plusp how-many)
       collect (read-value 'u8 in)
       do (decf how-many)))
@@ -34,8 +34,9 @@
 (define-binary-type raw-bytes (size)
   (:reader
    (in)
+   (declare (ignorable size))
    (let ((data (ring-buffer-read-byte-sequence in size)))
-     (format t "raw bytes = ~a~%" data)
+     #+debug(format t "raw bytes = ~a~%" data)
      data))
   (:writer
    (out bytes)
@@ -48,12 +49,13 @@
    (loop
       with elem = nil
       with how-many = (read-value size-type in)
+      #+debug
       do
-	(format t "~a bytes ot tls list of ~a remain~%" how-many element-type)
+	#+debug (format t "~a bytes of tls list of ~a remain~%" how-many element-type)
       while (plusp how-many)
       do
 	(setf elem (read-value element-type in))
-	(format t "element = ~a~%" elem)
+	#+debug(format t "element = ~a~%" elem)
 	(decf how-many
 	      (etypecase element-size
 		(function (funcall element-size elem))
@@ -71,13 +73,9 @@
 (define-binary-class generic-record (tls-record)
   ((data (raw-bytes :size size))))
 
-(define-binary-class handshake-record (tls-record)
-  ((handshake handshake :initform nil)))
-
 (define-tagged-binary-class handshake ()
   ((handshake-type u8 :initform 0)
    (size u24 :initform 0))
-
   (:dispatch
    (find-handshake-class handshake-type)))
 
@@ -90,7 +88,7 @@
   ((data (raw-bytes :size size))))
 
 (defun tls-extension-size (ext)
-  (format t "size of ~a is = ~a~%" ext (slot-value ext 'size))
+  #+debug(format t "size of ~a is = ~a~%" ext (slot-value ext 'size))
   (+ 2 2 (slot-value ext 'size)))
 
 (define-tagged-binary-class tls-extension ()
