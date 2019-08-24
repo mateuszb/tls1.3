@@ -23,6 +23,7 @@
 	;; read the record bytes and rewrite them into the tls buffer
 	(ring-buffer-write-byte-sequence buf (ring-buffer-read-byte-sequence recbuf (tls::get-record-size rec)))
 	(setf obj (tls::read-value class buf))
+	(inspect obj)
 	(tls::write-value (type-of obj) buf obj)
 	(is (ironclad:byte-array-to-hex-string (ring-buffer-read-byte-sequence buf)) client-hello2)))
 
@@ -55,6 +56,15 @@
 	(tls::write-value (type-of obj) tlsbuf obj)
 	(is (ironclad:byte-array-to-hex-string (ring-buffer-read-byte-sequence tlsbuf)) server-hello)))))
 
+(defun test-key-generation ()
+  (let ((client-priv-key "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f")
+	(client-pub-key "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254")
+	(server-priv-key "909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeaf")
+	(server-pub-key "9fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615"))
+    (format t "~a~%"
+	    (ironclad::make-private-key :curve25519 :x client-priv-key))))
+
 (test-reading-of-client-hellos)
 (test-reading-of-server-hellos)
+(test-key-generation)
 (finalize)

@@ -23,13 +23,18 @@
    (in)
    (loop
       with how-many = (read-value size-type in)
+      with i = 0
+      with arr = (make-array how-many :element-type '(unsigned-byte 8) :initial-element 0)
       while (plusp how-many)
-      collect (read-value 'u8 in)
-      do (decf how-many)))
+      do
+	(setf (aref arr i) (read-value 'u8 in))
+	(incf i)
+	(decf how-many)
+      finally (return arr)))
   (:writer
    (out bytes)
    (write-value size-type out (length bytes))
-   (loop for b in bytes do (write-value 'u8 out b))))
+   (loop for b across bytes do (write-value 'u8 out b))))
 
 (define-binary-type raw-bytes (size)
   (:reader
@@ -71,7 +76,7 @@
      (loop for elem in lst do (write-value element-type out elem)))))
 
 (define-binary-class generic-record (tls-record)
-  ((data (raw-bytes :size size))))
+  ((data (raw-bytes :size len))))
 
 (define-tagged-binary-class handshake ()
   ((handshake-type u8 :initform 0)
@@ -104,6 +109,7 @@
     (0 'server-name-ext)
     (10 'supported-groups)
     (13 'signature-schemes)
+    (35 'session-ticket)
     (43 'client-supported-versions)
     (44 'cookie)
     (45 'psk-key-exchange-modes)
@@ -115,6 +121,7 @@
     (0 'server-name-ext)
     (10 'supported-groups)
     (13 'signature-schemes)
+    (35 'session-ticket)
     (43 'server-supported-versions)
     (44 'cookie-extension)
     (45 'psk-key-exchange-modes)
@@ -123,6 +130,9 @@
 
 (define-binary-class generic-extension (tls-extension)
   ((data (raw-bytes :size size))))
+
+(define-binary-class session-ticket (tls-extension)
+  ((ticket (raw-bytes :size size))))
 
 (define-binary-class client-supported-versions (tls-extension)
   ((versions (tls-list :size-type 'u8
@@ -226,7 +236,7 @@
 		 :initform (make-array 32 :element-type '(unsigned-byte 8) :initial-element 0))
    (session-id (tls-list :size-type 'u8 :element-type 'u8 :element-size 1))
    (selected-cipher u16)
-   (compression u8)
+   (compression u8 :initform 0)
    (extensions (tls-list :size-type 'u16
 			 :element-type 'tls-extension
 			 :element-size #'tls-extension-size))))
