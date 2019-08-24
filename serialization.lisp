@@ -44,6 +44,7 @@
 
 (defgeneric read-value (type stream &key))
 (defgeneric write-value (type stream value &key))
+(defgeneric peek-value (type stream offset &key))
 
 (defgeneric read-object (obj stream)
   (:method-combination progn :most-specific-last))
@@ -82,20 +83,44 @@
 		,@body))
 	  ,(destructuring-bind ((out value) &body body) (rest (assoc :writer spec))
 	     `(defmethod write-value ((,type (eql ',name)) ,out ,value &key ,@args)
+		,@body)))))
+    (3
+     (with-gensyms (type)
+       `(progn
+	  ,(destructuring-bind ((in) &body body) (rest (assoc :reader spec))
+	     `(defmethod read-value ((,type (eql ',name)) ,in &key ,@args)
+		,@body))
+	  ,(destructuring-bind ((out value) &body body) (rest (assoc :writer spec))
+	     `(defmethod write-value ((,type (eql ',name)) ,out ,value &key ,@args)
+		,@body))
+	  ,(destructuring-bind ((in offset) &body body) (rest (assoc :peek spec))
+	     `(defmethod peek-value ((,type (eql ',name)) ,in ,offset &key ,@args)
 		,@body)))))))
 
 
 ;; TLS 1.3 sends integers in big-endian format
 (define-binary-type unsigned-integer (bytes bits-per-byte)
-  (:reader (in)
-	   (loop with value = 0
-	      for low-bit downfrom (* bits-per-byte (1- bytes)) to 0 by bits-per-byte
-	      do (setf (ldb (byte bits-per-byte low-bit) value)
-		       (ring-buffer-read-byte in))
-	      finally (return value)))
-  (:writer (out value)
-	   (loop for low-bit downfrom (* bits-per-byte (1- bytes)) to 0 by bits-per-byte
-	      do (ring-buffer-write-byte out (ldb (byte bits-per-byte low-bit) value)))))
+  (:reader
+   (in)
+   (loop with value = 0
+      for low-bit downfrom (* bits-per-byte (1- bytes)) to 0 by bits-per-byte
+      do (setf (ldb (byte bits-per-byte low-bit) value)
+	       (ring-buffer-read-byte in))
+      finally (return value)))
+  (:writer
+   (out value)
+   (loop for low-bit downfrom (* bits-per-byte (1- bytes)) to 0 by bits-per-byte
+      do (ring-buffer-write-byte out (ldb (byte bits-per-byte low-bit) value))))
+  (:peek
+   (in off)
+   (loop with value = 0
+      with i = off
+      for low-bit downfrom (* bits-per-byte (1- bytes)) to 0 by bits-per-byte
+      do
+	(setf (ldb (byte bits-per-byte low-bit) value)
+	      (alien-ring::ring-buffer-peek-byte in i))
+	(incf i)
+      finally (return value))))
 
 (define-binary-type u8 () (unsigned-integer :bytes 1 :bits-per-byte 8))
 (define-binary-type u16 () (unsigned-integer :bytes 2 :bits-per-byte 8))
