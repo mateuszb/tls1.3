@@ -240,3 +240,15 @@
    (extensions (tls-list :size-type 'u16
 			 :element-type 'tls-extension
 			 :element-size #'tls-extension-size))))
+
+(define-binary-class certificate-entry ()
+  ((certdata (varbytes :size-type 'u24))))
+
+(defun certificate-entry-size (cert-entry)
+  (+ 3 (length (certdata cert-entry))))
+
+(define-binary-class certificate (handshake)
+  ((certificate-request (varbytes :size-type 'u8))
+   (certificates (tls-list :size-type 'u24
+			   :element-type 'certificate-entry
+			   :element-size #'certificate-entry-size))))

@@ -15,6 +15,9 @@
   state
   pubkey
   seckey
+  peer-pubkey
+  (handshake-hash (ironclad:make-digest :sha256))
+  record-hash
   mode
   socket)
 
@@ -146,9 +149,14 @@
      (alien-ring::ring-buffer-read-byte-sequence
       tlsrx (tls::get-record-size hdr)))))
 
-(defun encapsulate (tls msg)
+(defun transfer-tx-record (tls msg)
   (with-slots (txbuf tlstx) tls
     (tls::write-value (type-of msg) txbuf msg)
+
+    (let ((digester (tls-connection-handshake-hash tls)))
+      (ironclad:update-digest digester
+			      (alien-ring::ring-buffer-peek-byte-sequence txbuf)))
+
     (let ((rec (make-instance 'tls::tls-record
 			      :len (alien-ring:ring-buffer-size txbuf)
 			      :content-type tls::+record-handshake+)))
@@ -156,10 +164,6 @@
       (alien-ring:ring-buffer-write-byte-sequence
        tlstx
        (alien-ring:ring-buffer-read-byte-sequence txbuf)))))
-
-(defun transfer-tx-record (tls msg)
-  (encapsulate tls msg)
-  (on-write (tls-connection-socket tls) #'tls-tx))
 
 (defun record-completep (tls)
   (with-slots (rxbuf state current-record) tls
@@ -185,7 +189,12 @@
     (let ((content-type (tls::get-record-content-type current-record)))
       (case state
 	(:CLIENT-HELLO
-	 (let ((client-hello (let ((tls::*mode* :CLIENT)) (tls::read-value content-type rxbuf))))
+	 ;; peek at the sequence and compute the hash
+	 (let ((digester (tls-connection-handshake-hash tls)))
+	   (ironclad:update-digest digester
+				   (alien-ring::ring-buffer-peek-byte-sequence rxbuf)))
+	 (let ((client-hello (let ((tls::*mode* :CLIENT))
+			       (tls::read-value content-type rxbuf))))
 	   ;; process the record here...
 	   (send-server-hello tls client-hello)))))))
 
@@ -197,12 +206,13 @@
   (with-slots (txbuf state current-record) tls
     (let ((exts '())
 	  (supported-group nil)
+	  (key-share-group nil)
 	  (cipher nil))
       ;; pick a common cipher
       (setf cipher (pick-common-cipher (tls::ciphers client-hello)))
       (unless cipher
 	(error 'no-common-cipher-found))
-      
+
       ;; iterate over the extensions and process relevant information
       (loop for ext in (tls::extensions client-hello)
 	 do
@@ -227,12 +237,19 @@
 		     supported-group
 		     (ironclad:curve25519-key-y (tls-connection-pubkey tls)))
 		    exts))
+	     (tls::client-hello-key-share
+	      (let ((keyshare (first (tls::key-shares ext))))
+		(setf key-share-group (tls::named-group keyshare)
+		      (tls-connection-peer-pubkey tls) (tls::key-exchange keyshare))))
 	     (t
 	      (format t "unsupported client extension ~a = ~a~%" (tls::extension-type ext) ext))))
 
+      (unless (= supported-group key-share-group)
+	(error 'key-share-and-supported-groups-dont-match))
       (push (tls::make-server-supported-versions) exts)
 
       (let ((hello
 	     (tls::make-server-hello cipher (tls::session-id client-hello)
 				     exts)))
-	(transfer-tx-record tls hello)))))
+	(transfer-tx-record tls hello)
+	(on-write (tls-connection-socket tls) #'tls-tx)))))

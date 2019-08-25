@@ -105,12 +105,12 @@
    (loop with value = 0
       for low-bit downfrom (* bits-per-byte (1- bytes)) to 0 by bits-per-byte
       do (setf (ldb (byte bits-per-byte low-bit) value)
-	       (ring-buffer-read-byte in))
+	       (read-byte in))
       finally (return value)))
   (:writer
    (out value)
    (loop for low-bit downfrom (* bits-per-byte (1- bytes)) to 0 by bits-per-byte
-      do (ring-buffer-write-byte out (ldb (byte bits-per-byte low-bit) value))))
+      do (write-byte (ldb (byte bits-per-byte low-bit) value) out)))
   (:peek
    (in off)
    (loop with value = 0
@@ -118,7 +118,7 @@
       for low-bit downfrom (* bits-per-byte (1- bytes)) to 0 by bits-per-byte
       do
 	(setf (ldb (byte bits-per-byte low-bit) value)
-	      (alien-ring::ring-buffer-peek-byte in i))
+	      (stream-peek-byte in))
 	(incf i)
       finally (return value))))
 

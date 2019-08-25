@@ -5,7 +5,8 @@
 		:ring-buffer-write-byte
 		:ring-buffer-read-byte
 		:ring-buffer-read-byte-sequence
-		:ring-buffer-write-byte-sequence)
+		:ring-buffer-write-byte-sequence
+		:stream-peek-byte)
   (:export
    :make-tls-context
    :tls-fd))

@@ -4,13 +4,15 @@
   :license "BSD"
   :depends-on
   ("ironclad"
-   "alien-ring")
+   "alien-ring"
+   "flexi-streams")
   :components ((:file "packages")
 	       (:file "constants" :depends-on ("packages"))
 	       (:file "context" :depends-on ("packages"))
 	       (:file "serialization" :depends-on ("packages"))
 	       (:file "tls" :depends-on ("serialization"))
-	       (:file "handshake" :depends-on ("serialization"))
+	       (:file "hkdf" :depends-on ("packages"))
+	       (:file "handshake" :depends-on ("serialization" "hkdf"))
 	       (:file "record" :depends-on ("packages")))
   :in-order-to ((test-op (test-op "tls-1.3/test")))
   :description "A lightweight minimal tls1.3 library that is easy to integrate.")
