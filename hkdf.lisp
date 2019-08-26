@@ -100,4 +100,5 @@
     (format t "server key=~a~%" (ironclad:byte-array-to-hex-string server-hs-key))
     (format t "client iv=~a~%" (ironclad:byte-array-to-hex-string client-hs-iv))
     (format t "server iv=~a~%" (ironclad:byte-array-to-hex-string server-hs-iv))
-    handshake-secret))
+    (values ssecret server-hs-key server-hs-iv
+	    csecret client-hs-key client-hs-iv)))

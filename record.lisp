@@ -5,18 +5,18 @@
 (define-binary-class tls-record ()
   ((content-type u8 :initform +RECORD-INVALID+)
    (protocol-version u16 :initform +TLS-1.2+)
-   (len u16)))
+   (size u16)))
 
-(defun get-record-content-type (rec)
-  (ecase (slot-value rec 'content-type)
+(defun tls-content->class (content-type)
+  (ecase content-type
     (20 'change-cipher-spec)
     (21 'alert)
     (22 'handshake)
     (23 'application-data)
     (24 'heartbeat)))
 
-(defun get-record-size (rec)
-  (slot-value rec 'len))
+(defun get-record-content-type (rec)
+  (tls-content->class (slot-value rec 'content-type)))
 
 (define-binary-type varbytes (size-type)
   (:reader
@@ -39,18 +39,18 @@
 (define-binary-type raw-bytes (size)
   (:reader
    (in)
-   (declare (ignorable size))
-   (let ((data (ring-buffer-read-byte-sequence in size)))
-     #+debug(format t "raw bytes = ~a~%" data)
-     data))
+   (let ((buf (make-array size :element-type '(unsigned-byte 8) :initial-element 0)))
+     (read-sequence buf in :start 0 :end size)
+     buf))
   (:writer
    (out bytes)
    (declare (ignorable size))
-   (ring-buffer-write-byte-sequence out bytes)))
+   (write-sequence bytes out)))
 
 (define-binary-type tls-list (size-type element-type element-size)
   (:reader
    (in)
+   #+debug(format t "reading tls-list of ~a elements~%" element-type)
    (loop
       with elem = nil
       with how-many = (read-value size-type in)
@@ -76,7 +76,7 @@
      (loop for elem in lst do (write-value element-type out elem)))))
 
 (define-binary-class generic-record (tls-record)
-  ((data (raw-bytes :size len))))
+  ((data (raw-bytes :size size))))
 
 (define-tagged-binary-class handshake ()
   ((handshake-type u8 :initform 0)
@@ -87,7 +87,11 @@
 (defun find-handshake-class (handshake-type)
   (ecase handshake-type
     (1 'client-hello)
-    (2 'server-hello)))
+    (2 'server-hello)
+    (8 'encrypted-extensions)
+    (11 'certificate)
+    (15 'certificate-verify)
+    (20 'finished)))
 
 (define-binary-class generic-handshake (handshake)
   ((data (raw-bytes :size size))))
@@ -242,13 +246,47 @@
 			 :element-size #'tls-extension-size))))
 
 (define-binary-class certificate-entry ()
-  ((certdata (varbytes :size-type 'u24))))
+  ((certdata (varbytes :size-type 'u24))
+   (extensions (tls-list :size-type 'u16
+			 :element-type 'tls-extension
+			 :element-size #'tls-extension-size))))
 
 (defun certificate-entry-size (cert-entry)
-  (+ 3 (length (certdata cert-entry))))
+  (+ 3 2
+     (length (certdata cert-entry))
+     (reduce #'+ (mapcar #'tls-extension-size (extensions cert-entry)))))
 
 (define-binary-class certificate (handshake)
   ((certificate-request (varbytes :size-type 'u8))
    (certificates (tls-list :size-type 'u24
 			   :element-type 'certificate-entry
 			   :element-size #'certificate-entry-size))))
+
+(defun read-certificate-der-file (path)
+  (with-open-file (certfile path :element-type '(unsigned-byte 8))
+    (let ((len (file-length certfile)))
+      (let ((arr (make-array len :element-type '(unsigned-byte 8))))
+	(read-sequence arr certfile)
+	arr))))
+
+(defun make-server-certificate (certpath)
+  (let ((certbytes (read-certificate-der-file certpath)))
+    (let ((cert (make-instance 'certificate-entry :certdata certbytes)))
+      (make-instance 'certificate
+		     :handshake-type +CERTIFICATE+
+		     :size (+ 1 (length '()) (certificate-entry-size cert))
+		     :certificate-request '()
+		     :certificates (list cert)))))
+
+(define-binary-class application-data (tls-record)
+  ((data (raw-bytes :size size))))
+
+(define-binary-class certificate-verify (handshake)
+  ((signature-scheme u16 :initform 0)
+   (signature (tls-list :size-type 'u16 :element-type 'u8 :element-size 1))))
+
+(define-binary-class finished (handshake)
+  ((data (raw-bytes :size size))))
+
+(define-binary-class encrypted-extensions (handshake)
+  ((extensions (tls-list :size-type 'u16 :element-type 'tls-extension :element-size #'tls-extension-size))))

@@ -118,7 +118,7 @@
       for low-bit downfrom (* bits-per-byte (1- bytes)) to 0 by bits-per-byte
       do
 	(setf (ldb (byte bits-per-byte low-bit) value)
-	      (stream-peek-byte in))
+	      (stream-peek-byte in i))
 	(incf i)
       finally (return value))))
 
