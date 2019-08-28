@@ -5,32 +5,37 @@
 
 (defvar *connections*)
 
-(defstruct tls-connection
-  (tlsrx (make-binary-ring-stream 8192))
-  (tlstx (make-binary-ring-stream 8192))
-  (rx (make-binary-ring-stream 8192))
-  (tx (make-binary-ring-stream 8192))
-  current-record
-  packets
-  state
-  pubkey
-  seckey
-  peer-pubkey
-  (handshake-stream (ironclad:make-digesting-stream :sha256))
-  record-hash
-  shared-secret
-  ssecret
-  server-key
-  server-iv
-  csecret
-  client-key
-  client-iv
-  mode
-  aead
-  socket)
+(defclass certificate ()
+  ((path :type string :initform nil :initarg :path :accessor path)))
 
-(defun set-state (tls state)
-  (setf (tls-connection-state tls) state))
+(defclass x509-certificate (certificate)
+  ((encoding :type keyword :initform nil :initarg :encoding :accessor encoding)
+   (bytes :initform nil :initarg :bytes :accessor bytes)))
+
+(defclass tls-connection ()
+  ((tlsrx :initform (make-binary-ring-stream 8192) :accessor tls-rx-stream)
+   (tlstx :initform (make-binary-ring-stream 8192) :accessor tls-tx-stream)
+   (rx :initform (make-binary-ring-stream 8192) :accessor rx-stream)
+   (tx :initform (make-binary-ring-stream 8192) :accessor tx-stream)
+   (current-record :initform nil :accessor tls-record)
+   (packets :initform nil)
+   (state :initform nil :accessor connection-state :initarg :state)
+   (pubkey :initform nil :accessor public-key)
+   (seckey :initform nil :accessor private-key)
+   (peer-pubkey :initform nil :accessor peer-key)
+   (handshake-stream :initform (ironclad:make-digesting-stream :sha384) :accessor digest-stream)
+   (record-hash :initform nil)
+   (shared-secret :initform nil :accessor shared-secret)
+   (ssecret :initform nil :accessor server-secret)
+   (server-hs-key :accessor server-hs-key)
+   (server-hs-iv :accessor server-hs-iv)
+   (csecret :accessor client-secret)
+   (client-key :accessor client-hs-key)
+   (client-iv :accessor client-hs-iv)
+   (mode :accessor tls-mode)
+   (aead :accessor aead)
+   (socket :accessor socket :initform -1 :initarg :socket)
+   (certificate :accessor certificate)))
 
 (defun start (port)
   (let ((dispatcher (make-dispatcher))
@@ -99,21 +104,23 @@
 	(format t "no more data to send. disabling write notification~%")
 	(del-write sd)))))
 
+(defun make-tls-connection (socket state)
+  (make-instance 'tls-connection :socket socket :state state))
+
 (defun tls-rx (ctx event)
   (declare (ignore event))
   (let* ((sd (context-socket ctx))
 	 (nbytes (socket:get-rxbytes sd))
 	 (tls::*mode* :SERVER))
     (unless (context-data ctx)
-      (setf (context-data ctx) (make-tls-connection :socket sd))
-      (set-state (context-data ctx) :CLIENT-HELLO))
+      (setf (context-data ctx) (make-tls-connection sd :CLIENT-HELLO)))
 
     (let ((tls (context-data ctx)))
       (with-slots (rx rxbuf) tls
 	;; read pending bytes from the socket into the tls buffer
 	(rx-into-buffer sd (stream-buffer rx) nbytes)
 
-	(when (tls-connection-current-record tls)
+	(when (tls-record tls)
 	  ;; we are in the middle of procesing of a record so let's see
 	  ;; if we can finish it
 	  (format t "partial record detected...~%")
@@ -124,7 +131,7 @@
 	   while (>= (alien-ring::ring-buffer-size (stream-buffer rx)) 5)
 	   do
 	     (let ((hdr (tls::read-value 'tls::tls-record rx)))
-	       (setf (tls-connection-current-record tls) hdr)
+	       (setf (tls-record tls) hdr)
 	       (format t "tls record len = ~a~%" (tls::size hdr))
 	       (cond
 		 ;; check if the ring buffer has enough data for a
@@ -201,14 +208,14 @@
    (intersection ciphers (list tls::+TLS-AES-256-GCM-SHA384+))))
 
 (defun compute-dh-shared-secret (tls)
-  (let ((mine (tls-connection-seckey tls))
-	(theirs (tls-connection-peer-pubkey tls)))
+  (let ((mine (private-key tls))
+	(theirs (peer-key tls)))
     (ironclad:diffie-hellman mine theirs)))
 
 (defun generate-keys (tls type)
   (multiple-value-bind (secret public) (ironclad:generate-key-pair type)
-    (setf (tls-connection-seckey tls) secret
-	  (tls-connection-pubkey tls) public)))
+    (setf (private-key tls) secret
+	  (public-key tls) public)))
 
 (defun send-server-hello (tls client-hello)
   (with-slots (txbuf state current-record) tls
@@ -239,17 +246,17 @@
 		(error 'no-common-group-found))
 	      (push (tls::make-server-keyshare
 		     supported-group
-		     (ironclad:curve25519-key-y (tls-connection-pubkey tls)))
+		     (ironclad:curve25519-key-y (public-key tls)))
 		    exts))
 	     (tls::client-hello-key-share
 	      (let ((keyshare
 		     (find tls::+x25519+ (tls::key-shares ext) :key #'tls::named-group :test #'=)))
-		(setf (tls-connection-peer-pubkey tls)
+		(setf (peer-key tls)
 		      (ironclad:make-public-key :curve25519 :y (tls::key-exchange keyshare))
 		      key-share-group (tls::named-group keyshare))
 
 		;; diffie-hellman key exchange
-		(setf (tls-connection-shared-secret tls)
+		(setf (shared-secret tls)
 		      (compute-dh-shared-secret tls))))
 	     (t
 	      (format t "unsupported client extension ~a = ~a~%" (tls::extension-type ext) ext))))
@@ -258,30 +265,31 @@
 	(error 'key-share-and-supported-groups-dont-match))
       (push (tls::make-server-supported-versions) exts)
 
-      (let ((hello (tls::make-server-hello cipher (tls::session-id client-hello) exts)))
+      (let ((server-hello (tls::make-server-hello cipher (tls::session-id client-hello) exts)))
 	;; calculate digest of client hello and server hello
-	(tls::write-value (type-of client-hello) (tls-connection-handshake-stream tls) client-hello)
-	(tls::write-value (type-of hello) (tls-connection-handshake-stream tls) hello)
+	(tls::write-value (type-of client-hello) (digest-stream tls) client-hello)
+	(tls::write-value (type-of server-hello) (digest-stream tls) server-hello)
 
+	(with-open-file (tmpfile "/tmp/msgs" :direction :output :if-exists :overwrite :element-type '(unsigned-byte 8))
+	  (tls::write-value (type-of client-hello) tmpfile client-hello)
+	  (tls::write-value (type-of server-hello) tmpfile server-hello))
 	(format t "handshake-digest ~a~%"
 		(ironclad:byte-array-to-hex-string
-		 (ironclad:produce-digest (tls-connection-handshake-stream tls))))
+		 (ironclad:produce-digest (digest-stream tls))))
 
 	(multiple-value-bind (ss skey siv cs ckey civ)
-	    (tls::key-calculations :sha256 (tls-connection-shared-secret tls)
-				   (ironclad:produce-digest (tls-connection-handshake-stream tls)))
-	  (with-slots (ssecret server-key server-iv csecret client-key client-iv) tls
-	    (setf ssecret ss
-		  server-key skey
-		  server-iv siv
-		  csecret cs
-		  client-key ckey
-		  client-iv civ)))
+	    (tls::key-calculations :sha384 (shared-secret tls)
+				   (ironclad:produce-digest (digest-stream tls)))
+	  (setf (server-secret tls) ss
+		(server-hs-key tls) skey
+		(server-hs-iv tls) siv
+		(client-secret tls) cs
+		(client-hs-key tls) ckey
+		(client-hs-iv tls) civ))
 
-	(transfer-tx-record tls hello)
-
+	(transfer-tx-record tls server-hello)
 	(send-server-certificate tls)
-	(on-write (tls-connection-socket tls) #'tls-tx)))))
+	(on-write (socket tls) #'tls-tx)))))
 
 (defun scan-for-content-type (plaintext)
   (loop for i downfrom (1- (length plaintext)) to 0
@@ -290,18 +298,86 @@
      while (zerop (aref plaintext i))
      finally (return i)))
 
-(defun send-server-certificate (tls)
-  (let ((certmsg (tls::make-server-certificate #p"/home/mrcode/ssl-dev/server.der")))
-    (let ((plaintext (flexi-streams:with-output-to-sequence (tmp)
-		       (tls::write-value (type-of certmsg) tmp certmsg))))
-      ;; encrypt with
-      (setf (tls-connection-aead tls)
-	    (ironclad:make-authenticated-encryption-mode
-	     :gcm :cipher-name :aes
-	     :key (make-array 32 :element-type '(unsigned-byte 8) :initial-element 0)
-	     :initialization-vector
-	     (make-array 12 :element-type '(unsigned-byte 8) :initial-element 0))))))
+(defun read-file (path)
+  (with-open-file (in path :element-type '(unsigned-byte 8))
+    (let ((len (file-length in)))
+      (let ((seq (make-array len :element-type '(unsigned-byte 8))))
+	(read-sequence seq in)
+	seq))))
 
+(defun read-x509-certificate (path encoding)
+  (let ((certbytes (read-file path)))
+    (make-instance 'x509-certificate :encoding encoding :path path :bytes certbytes)))
+
+(defun send-server-certificate (tls)
+  (let* ((x509cert (read-x509-certificate #p"~/ssl-dev/server.der" :der))
+	 (exts (tls::make-encrypted-extensions '()))
+	 (certmsg (tls::make-server-certificate (bytes x509cert))))
+    (setf (aead tls)
+	  (ironclad:make-authenticated-encryption-mode
+	   :gcm :cipher-name :aes :key (server-hs-key tls) :initialization-vector (server-hs-iv tls)))
+
+    ;; update handshake digest
+    (tls::write-value (type-of exts) (digest-stream tls) exts)
+    (tls::write-value (type-of certmsg) (digest-stream tls) certmsg)
+
+    (let ((signature
+	   (ironclad:sign-message
+	    (load-private-key-der #p"~/ssl-dev/key.der")
+	    (alien-ring::with-output-to-byte-sequence (out (+ 64 33 1 48))
+	      (let ((space-vector (make-array 64 :element-type '(unsigned-byte 8) :initial-element #x20))
+		    (label (ironclad:ascii-string-to-byte-array "TLS 1.3, server CertificateVerify")))
+		(write-sequence space-vector out)
+		(loop for elem across label do (write-byte elem out))
+		(write-byte 0 out)
+		(write-sequence (ironclad:produce-digest (digest-stream tls)) out)))
+	    :pss :sha256)))
+
+      (format t "signature=~a~%" signature)
+      (let ((cert-verify
+	     (make-instance
+	      'tls::certificate-verify
+	      :handshake-type tls::+certificate-verify+
+	      :size (+ 2 2 (length signature))
+	      :signature signature
+	      :signature-scheme tls::+rsa-pss-rsae-sha256+)))
+	(let ((ciphertext
+	       (encrypt-messages (aead tls) (list exts certmsg cert-verify) tls::+RECORD-HANDSHAKE+)))
+	  #+off(format t "writing ciphertext = ~a~%" ciphertext)
+	  (tls::write-value
+	   'tls::tls-record
+	   (tx-stream tls)
+	   (make-instance
+	    'tls::tls-record :size (+ 16 (length ciphertext))
+	    :content-type tls::+RECORD-APPLICATION-DATA+))
+	  (write-sequence ciphertext (tx-stream tls))
+	  (format t "writing AEAD tag = ~a~%"
+		  (ironclad:byte-array-to-hex-string (ironclad:produce-tag (aead tls))))
+	  (write-sequence (ironclad:produce-tag (aead tls)) (tx-stream tls)))))))
+
+(defun encrypt-messages (gcm msgs content-type)
+  (let* ((total-size (+ 1 (reduce #'+ (mapcar #'tls::tls-size msgs))))
+	 (aead-data
+	  (alien-ring::with-output-to-byte-sequence (buf 5)
+	    (let ((data (tls::make-aead-data (+ 16 total-size))))
+	      (tls::write-value (type-of data) buf data)))))
+
+    (format t "aead data = ~a~%" (ironclad:byte-array-to-hex-string aead-data))
+    (format t "total calculated size is ~a~%" total-size)
+    (let ((plaintext
+	   (alien-ring::with-output-to-byte-sequence (out total-size)
+	     (format t "msgs=~a~%" msgs)
+	     (loop for msg in msgs
+		do (tls::write-value (type-of msg) out msg))
+	     (tls::write-value 'tls::u8 out content-type))))
+      (format t "plaintext to encrypt: ~a~%" plaintext)
+      (ironclad:encrypt-message
+       gcm
+       (make-array
+	total-size
+	:element-type '(unsigned-byte 8)
+	:initial-contents plaintext)
+       :associated-data aead-data))))
 
 (defun wip ()
   (let* ((tls::*mode* :SERVER)
@@ -309,7 +385,8 @@
 	 (tag (ironclad:hex-string-to-byte-array "e08b0e455a350ae54d76349aa68c71ae"))
 	 (iv (ironclad:hex-string-to-byte-array "4c042ddc120a38d1417fc815"))
 	 (key (ironclad:hex-string-to-byte-array "844780a7acad9f980fa25c114e43402a"))
-	 (gcm (ironclad:make-authenticated-encryption-mode :gcm :cipher-name :aes :key key :initialization-vector iv)))
+	 (gcm (ironclad:make-authenticated-encryption-mode :gcm :cipher-name :aes :key key :initialization-vector iv))
+	 (gcm2 (ironclad:make-authenticated-encryption-mode :gcm :cipher-name :aes :key key :initialization-vector iv)))
     (flexi-streams:with-input-from-sequence (s record)
       (let* ((appdata (tls::read-value 'tls::application-data s))
 	     (ciphertext (subseq (tls::data appdata) 0 (- (tls::size appdata) 16)))
@@ -320,7 +397,6 @@
 	(let ((plaintext
 	       (ironclad:decrypt-message gcm ciphertext :associated-data assocdata)))
 
-	  ;; so stupid... scanning backwards?
 	  (let* ((content-type-pos (scan-for-content-type plaintext))
 		 (rectype (tls::tls-content->class (aref plaintext content-type-pos)))
 		 (plaintext (subseq plaintext 0 content-type-pos)))
@@ -330,8 +406,28 @@
 	    (format t "ciphertext length=~a~%" (tls::size appdata))
 	    (format t "plaintext length=~a~%" (length plaintext))
 
-	    (flexi-streams:with-input-from-sequence (in plaintext)
-	      (inspect (tls::read-value rectype in))
-	      (inspect (tls::read-value rectype in))
-	      (inspect (tls::read-value rectype in))
-	      (inspect (tls::read-value rectype in)))))))))
+	    ;; reverse the operations by encrypting everything and
+	    ;; compare the cipher text against original ciphertext
+	    ;; input. they should match
+
+	    (let ((msgs (flexi-streams:with-input-from-sequence (in plaintext)
+			  (loop for i from 0 below 4 collect (tls::read-value rectype in)))))
+	      (let ((ciphertext (encrypt-messages gcm2 msgs tls::+RECORD-HANDSHAKE+)))
+		(format t "ciphertext=~a~%"
+			(ironclad:byte-array-to-hex-string ciphertext))
+		(format t "auth tag=~a~%"
+			(ironclad:byte-array-to-hex-string
+			 (ironclad:produce-tag gcm2)))))
+
+	  ))))))
+
+(defun load-private-key-der (path)
+  (let ((privkey
+	 (asn.1:ber-decode
+	  (with-open-file (in path :element-type '(unsigned-byte 8))
+	    (let ((seq (make-array (file-length in) :element-type '(unsigned-byte 8))))
+	      (read-sequence seq in)
+	      seq)))))
+    (ironclad:make-private-key :rsa
+			       :n (aref privkey 1)
+			       :d (aref privkey 3))))

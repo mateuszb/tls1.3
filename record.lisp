@@ -252,9 +252,8 @@
 			 :element-size #'tls-extension-size))))
 
 (defun certificate-entry-size (cert-entry)
-  (+ 3 2
-     (length (certdata cert-entry))
-     (reduce #'+ (mapcar #'tls-extension-size (extensions cert-entry)))))
+  (+ 3 (length (certdata cert-entry))
+     2 (reduce #'+ (mapcar #'tls-extension-size (extensions cert-entry)))))
 
 (define-binary-class certificate (handshake)
   ((certificate-request (varbytes :size-type 'u8))
@@ -269,24 +268,48 @@
 	(read-sequence arr certfile)
 	arr))))
 
-(defun make-server-certificate (certpath)
-  (let ((certbytes (read-certificate-der-file certpath)))
-    (let ((cert (make-instance 'certificate-entry :certdata certbytes)))
+(defun make-server-certificate (bytes)
+  (let ((certbytes bytes))
+    (let ((certs (list (make-instance 'certificate-entry :certdata certbytes :extensions '()))))
       (make-instance 'certificate
 		     :handshake-type +CERTIFICATE+
-		     :size (+ 1 (length '()) (certificate-entry-size cert))
-		     :certificate-request '()
-		     :certificates (list cert)))))
+		     :size (+ 1 (length '())
+			      3 (reduce #'+ (mapcar #'certificate-entry-size certs)))
+		     :certificate-request (make-array 0)
+		     :certificates certs))))
 
 (define-binary-class application-data (tls-record)
   ((data (raw-bytes :size size))))
 
 (define-binary-class certificate-verify (handshake)
   ((signature-scheme u16 :initform 0)
-   (signature (tls-list :size-type 'u16 :element-type 'u8 :element-size 1))))
+   (signature (varbytes :size-type 'u16))))
 
 (define-binary-class finished (handshake)
   ((data (raw-bytes :size size))))
 
 (define-binary-class encrypted-extensions (handshake)
-  ((extensions (tls-list :size-type 'u16 :element-type 'tls-extension :element-size #'tls-extension-size))))
+  ((extensions
+    (tls-list :size-type 'u16 :element-type 'tls-extension :element-size #'tls-extension-size))))
+
+(defun make-encrypted-extensions (exts)
+  (make-instance
+   'encrypted-extensions
+   :handshake-type +ENCRYPTED-EXTENSIONS+
+   :size (+ 2 (reduce #'+ (mapcar #'tls-extension-size exts)))
+   :extensions exts))
+
+(define-binary-class aead-additional-data ()
+  ((content-type u8 :initform +RECORD-APPLICATION-DATA+)
+   (legacy-version u16 :initform +TLS-1.2+)
+   (size u16)))
+
+(defun make-aead-data (size)
+  (make-instance 'aead-additional-data :size size))
+
+(define-binary-class aead-auth-tag ()
+  ((tag (raw-bytes :size 16))))
+
+(defgeneric tls-size (msg))
+(defmethod tls-size ((msg handshake))
+  (+ 1 3 (size msg)))
