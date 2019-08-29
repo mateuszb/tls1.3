@@ -323,7 +323,7 @@
 
     (let ((signature
 	   (ironclad:sign-message
-	    (load-private-key-der #p"~/ssl-dev/key.der")
+	    (tls::load-private-key-der #p"~/ssl-dev/key.der")
 	    (alien-ring::with-output-to-byte-sequence (out (+ 64 33 1 48))
 	      (let ((space-vector (make-array 64 :element-type '(unsigned-byte 8) :initial-element #x20))
 		    (label (ironclad:ascii-string-to-byte-array "TLS 1.3, server CertificateVerify")))
@@ -341,19 +341,34 @@
 	      :size (+ 2 2 (length signature))
 	      :signature signature
 	      :signature-scheme tls::+rsa-pss-rsae-sha256+)))
-	(let ((ciphertext
-	       (encrypt-messages (aead tls) (list exts certmsg cert-verify) tls::+RECORD-HANDSHAKE+)))
-	  #+off(format t "writing ciphertext = ~a~%" ciphertext)
-	  (tls::write-value
-	   'tls::tls-record
-	   (tx-stream tls)
-	   (make-instance
-	    'tls::tls-record :size (+ 16 (length ciphertext))
-	    :content-type tls::+RECORD-APPLICATION-DATA+))
-	  (write-sequence ciphertext (tx-stream tls))
-	  (format t "writing AEAD tag = ~a~%"
-		  (ironclad:byte-array-to-hex-string (ironclad:produce-tag (aead tls))))
-	  (write-sequence (ironclad:produce-tag (aead tls)) (tx-stream tls)))))))
+	;; update the handshake digest with the certificate verify message
+	(tls::write-value (type-of cert-verify) (digest-stream tls) cert-verify)
+
+	(let* ((finished-key
+		(tls::hkdf-expand-label
+		 :sha384 (server-secret tls) "finished" "" (tls::hash-len :sha384)))
+	       (finished-hash (ironclad:produce-digest (digest-stream tls)))
+	       (finished-data (ironclad:produce-mac
+			       (ironclad:update-hmac
+				(ironclad:make-hmac finished-key :sha384)
+				finished-hash)))
+	       (finished
+		(make-instance 'tls::finished :size (tls::hash-len :sha384)
+			       :handshake-type tls::+FINISHED+
+			       :data finished-data)))
+	  (format t "finished key=~a~%" (ironclad:byte-array-to-hex-string finished-key))
+	  (let* ((ciphertext (encrypt-messages
+			      (aead tls)
+			      (list exts certmsg cert-verify finished)
+			      tls::+RECORD-HANDSHAKE+))
+		 (rec (make-instance 'tls::tls-record :size (+ 16 (length ciphertext))
+				     :content-type tls::+RECORD-APPLICATION-DATA+)))
+	    #+off(format t "writing ciphertext = ~a~%" ciphertext)
+	    (tls::write-value 'tls::tls-record (tx-stream tls) rec)
+	    (write-sequence ciphertext (tx-stream tls))
+	    (format t "writing AEAD tag = ~a~%"
+		    (ironclad:byte-array-to-hex-string (ironclad:produce-tag (aead tls))))
+	    (write-sequence (ironclad:produce-tag (aead tls)) (tx-stream tls))))))))
 
 (defun encrypt-messages (gcm msgs content-type)
   (let* ((total-size (+ 1 (reduce #'+ (mapcar #'tls::tls-size msgs))))
@@ -420,14 +435,3 @@
 			 (ironclad:produce-tag gcm2)))))
 
 	  ))))))
-
-(defun load-private-key-der (path)
-  (let ((privkey
-	 (asn.1:ber-decode
-	  (with-open-file (in path :element-type '(unsigned-byte 8))
-	    (let ((seq (make-array (file-length in) :element-type '(unsigned-byte 8))))
-	      (read-sequence seq in)
-	      seq)))))
-    (ironclad:make-private-key :rsa
-			       :n (aref privkey 1)
-			       :d (aref privkey 3))))
