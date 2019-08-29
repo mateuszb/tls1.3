@@ -9,4 +9,5 @@
 		:stream-peek-byte)
   (:export
    :make-tls-context
+   :load-private-key-der
    :tls-fd))
