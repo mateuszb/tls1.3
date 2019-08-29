@@ -12,6 +12,7 @@
 	       (:file "serialization" :depends-on ("packages"))
 	       (:file "tls" :depends-on ("serialization"))
 	       (:file "hkdf" :depends-on ("packages"))
+	       (:file "der" :depends-on ("packages"))
 	       (:file "handshake" :depends-on ("serialization" "hkdf"))
 	       (:file "record" :depends-on ("packages")))
   :in-order-to ((test-op (test-op "tls-1.3/test")))
