@@ -313,3 +313,7 @@
 
 (define-binary-class change-cipher-spec ()
   ((cipher u8 :initform 1)))
+
+(define-binary-class alert ()
+  ((level u8)
+   (description u8)))
