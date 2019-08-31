@@ -27,8 +27,6 @@
       (if (= short-tag #b11111)
 	  (setf tag (read-long-tag in))
 	  (setf tag short-tag))
-      (if (and (= constructed-p 1) (= short-tag +ASN.1-SEQUENCE-TAG+))
-	  (decode-sequence in))
       (values class constructed-p tag))))
 
 (defun indefinite-form-p (o)
