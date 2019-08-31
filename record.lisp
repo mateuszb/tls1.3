@@ -278,9 +278,6 @@
 		     :certificate-request (make-array 0)
 		     :certificates certs))))
 
-(define-binary-class application-data (tls-record)
-  ((data (raw-bytes :size size))))
-
 (define-binary-class certificate-verify (handshake)
   ((signature-scheme u16 :initform 0)
    (signature (varbytes :size-type 'u16))))
@@ -313,3 +310,6 @@
 (defgeneric tls-size (msg))
 (defmethod tls-size ((msg handshake))
   (+ 1 3 (size msg)))
+
+(define-binary-class change-cipher-spec ()
+  ((cipher u8 :initform 1)))
