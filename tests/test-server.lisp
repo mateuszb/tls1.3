@@ -56,6 +56,12 @@
    (socket :accessor socket :initform -1 :initarg :socket)
    (certificate :accessor certificate)))
 
+(defclass tls12-connection (tls-connection)
+  ())
+
+(defclass tls13-connection (tls-connection)
+  ())
+
 (defun start (port)
   (let ((dispatcher (make-dispatcher))
 	(*connections* (make-hash-table)))
@@ -126,6 +132,11 @@
 (defun make-tls-connection (socket state)
   (make-instance 'tls-connection :socket socket :state state))
 
+(defun upgrade-tls-connection (conn version)
+  (ecase version
+    (:tls12 (change-class conn 'tls12-connection))
+    (:tls13 (change-class conn 'tls13-connection))))
+
 (defun tls-rx (ctx event)
   (declare (ignore event))
   (let* ((sd (context-socket ctx))
@@ -137,7 +148,6 @@
     (let ((tls (context-data ctx)))
       (with-slots (rx rxbuf) tls
 	;; read pending bytes from the socket into the tls buffer
-	(format t "reading ~a bytes~%" nbytes)
 	(rx-into-buffer sd (stream-buffer rx) nbytes)
 
 	;; read the record header (5 bytes) from the rx queue
@@ -565,12 +575,18 @@
 	      (in plaintext)
 	      (tls::read-value type in)))
 	    (:NEGOTIATED
-	     ;; write the application data to the decrypted RX stream
-	     (format t "transfering data '~a' into rx buffer"
-		     (map 'string #'code-char (subseq plaintext 0 (1- (length plaintext)))))
-	     (format t "bytes: ~a~%" plaintext)
-	     (write-sequence plaintext (rx-data-stream tls) :start 0 :end (1- (length plaintext)))
-	     t
+	     (ecase type
+	       (tls::alert
+		(format t "alert arrived~%")
+		(flexi-streams:with-input-from-sequence (in plaintext)
+							(inspect (tls::read-value type in))))
+
+	       (tls::application-data
+		;; write the application data to the decrypted RX stream
+		(format t "transfering data '~a' into rx buffer"
+			(map 'string #'code-char (subseq plaintext 0 (1- (length plaintext)))))
+		(format t "bytes: ~a~%" plaintext)
+		(write-sequence plaintext (rx-data-stream tls) :start 0 :end (1- (length plaintext)))))
 	     ;; TODO: signal data available for reading by calling some
 	     ;; callback?
 	     )))))))

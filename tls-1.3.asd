@@ -5,6 +5,8 @@
   :depends-on
   ("ironclad"
    "alien-ring"
+   "socket"
+   "reactor"
    "flexi-streams")
   :components ((:file "packages")
 	       (:file "constants" :depends-on ("packages"))
@@ -14,7 +16,11 @@
 	       (:file "hkdf" :depends-on ("packages"))
 	       (:file "der" :depends-on ("packages"))
 	       (:file "handshake" :depends-on ("serialization" "hkdf"))
-	       (:file "record" :depends-on ("packages")))
+	       (:file "connection" :depends-on ("packages"))
+	       (:file "certificate" :depends-on ("packages"))
+	       (:file "server" :depends-on ("connection" "certificate" "record" "packages"))
+	       (:file "client" :depends-on ("connection"))
+	       (:file "record" :depends-on ("serialization")))
   :in-order-to ((test-op (test-op "tls-1.3/test")))
   :description "A lightweight minimal tls1.3 library that is easy to integrate.")
 
