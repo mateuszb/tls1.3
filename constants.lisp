@@ -88,6 +88,11 @@
   #(207 33 173 116 229 154 97 17 190 29 140 2 30 101 184 145 194 162 17 22 122
   187 140 94 7 158 9 226 200 168 51 156))
 
+;; ALERT related constants
+
+(defconstant +ALERT-WARNING+ 1)
+(defconstant +ALERT-FATAL+ 2)
+
 (defconstant +close-notify+ 0)
 (defconstant +unexpected-message+ 10)
 (defconstant +bad-record-mac+ 20)
