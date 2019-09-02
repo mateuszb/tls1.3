@@ -47,6 +47,15 @@
 
   (:import-from :reactor
 		:reactor-handle)
+
+  (:import-from :cl-speedy-queue
+		:make-queue
+		:dequeue
+		:enqueue
+		:queue-peek
+		:queue-count
+		:queue-empty-p
+		:queue-full-p)
   (:export
    :make-tls-context
    :load-private-key-der

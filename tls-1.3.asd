@@ -7,6 +7,7 @@
    "alien-ring"
    "socket"
    "reactor"
+   "cl-speedy-queue"
    "flexi-streams")
   :components ((:file "packages")
 	       (:file "constants" :depends-on ("packages"))
