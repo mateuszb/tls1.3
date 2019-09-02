@@ -11,6 +11,7 @@
 (defconstant +max-fragment-length+ 1)
 (defconstant +status-request+ 5)
 (defconstant +supported-groups+ 10)
+(defconstant +ec-point-formats+ 11)
 (defconstant +signature-algorithms+ 13)
 (defconstant +use-srtp+ 14)
 (defconstant +heartbeat+ 15)
@@ -39,6 +40,15 @@
 (defconstant +TLS-AES-128-CCM-SHA256+ #x1304)
 (defconstant +TLS-AES-128-CCM-8-SHA256+ #x1305)
 
+;; TLS 1.2 cipher suites
+(defconstant +TLS-ECDHE-RSA-WITH-AES-256-GCM-SHA384+ #xC030)
+(defconstant +TLS-ECDHE-RSA-WITH-AES-128-GCM-SHA256+ #xC02B)
+(defconstant +TLS-RSA-WITH-AES-256-CBC-SHA256+ #x003D)
+(defconstant +TLS-RSA-WITH-AES-128-CBC-SHA+ #x002F)
+
+(defconstant +TLS-DHE-RSA-WITH-AES-256-CBC-SHA256+ #x006B)
+
+
 (defconstant +CLIENT-HELLO+ 1)
 (defconstant +SERVER-HELLO+ 2)
 (defconstant +NEW-SESSION-TICKET+ 4)
@@ -51,6 +61,7 @@
 (defconstant +KEY-UPDATE+ 24)
 (defconstant +MESSAGE-HASH+ 254)
 
+;; signature algorithms
 (defconstant +rsa-pkcs1-sha256+ #x0401)
 (defconstant +rsa-pkcs1-sha384+ #x0501)
 (defconstant +rsa-pkcs1-sha512+ #x0601)
