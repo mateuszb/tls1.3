@@ -8,7 +8,8 @@
 		:ring-buffer-write-byte-sequence
 		:make-binary-ring-stream
 		:stream-peek-byte
-		:stream-buffer)
+		:stream-buffer
+		:stream-size)
   (:import-from :socket
 		:set-non-blocking
 		:operation-interrupted
@@ -21,7 +22,7 @@
 		:get-host-addr)
   (:import-from :reactor.dispatch
 		:del-write
-		:del-reado
+		:del-read
 		:rem-socket
 		:on-read
 		:on-write
@@ -32,8 +33,20 @@
 		:dispatch-events
 		:with-dispatcher
 		:make-dispatcher
-		:*dispatcher*)
+		:close-dispatcher
+		:dispatcher-reactor
+		:socket-context
+		:make-context)
+  (:import-from :reactor
+		:reactor-handle)
   (:export
    :make-tls-context
    :load-private-key-der
-   :tls-fd))
+   :tls-fd
+   :tls-connection
+   :tls12-connection
+   :tls13-connection
+   :data
+   :socket
+   :start-server
+   :tls-read))
