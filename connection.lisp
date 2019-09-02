@@ -44,7 +44,16 @@
    (nonce-out :initform 0 :accessor nonce-out)
 
    (socket :accessor socket :initform -1 :initarg :socket)
-   (certificate :accessor certificate)))
+   (certificate :accessor certificate)
+
+   ;; callbacks
+   (accept-fn :accessor accept-fn :initarg :accept-fn)
+   (read-fn :accessor read-fn :initarg :read-fn)
+   (write-fn :accessor write-fn :initarg :write-fn)
+   (alert-fn :accessor alert-fn :initarg :alert-fn)
+   (disconnect-fn :accessor disconnect-fn :initarg :disconnect-fn)
+
+   (data :accessor data :initarg :data)))
 
 (defclass tls12-connection (tls-connection)
   ())
