@@ -61,10 +61,25 @@
 (defclass tls13-connection (tls-connection)
   ())
 
-(defun make-tls-connection (socket state)
-  (make-instance 'tls-connection :socket socket :state state))
+(defun make-tls-connection (socket state data accept-fn read-fn write-fn alert-fn disconnect-fn)
+  (make-instance 'tls-connection
+		 :socket socket :state state
+		 :data data
+		 :accept-fn accept-fn
+		 :read-fn read-fn
+		 :write-fn write-fn
+		 :alert-fn alert-fn
+		 :disconnect-fn disconnect-fn))
 
 (defun upgrade-tls-connection (conn version)
   (ecase version
     (:tls12 (change-class conn 'tls12-connection))
     (:tls13 (change-class conn 'tls13-connection))))
+
+(defun tls-read (tls &optional n)
+  (let ((read-size n))
+    (unless read-size
+      (setf read-size (stream-size (rx-data-stream tls))))
+    (let ((seq (make-array read-size :element-type '(unsigned-byte 8) :initial-element 0)))
+      (read-sequence seq (rx-data-stream tls))
+      seq)))
