@@ -184,6 +184,9 @@
 (define-binary-class supported-groups (tls-extension)
   ((named-groups (tls-list :size-type 'u16 :element-type 'u16 :element-size 2))))
 
+(define-binary-class ec-point-formats (tls-extension)
+  ((point-formats (tls-list :size-type 'u8 :element-type 'u8 :element-size 1))))
+
 (define-binary-class client-psk-key-exchange (tls-extension)
   ((offered-psks offered-psks)))
 
