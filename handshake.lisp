@@ -18,6 +18,20 @@
 (defun extension-size (ext)
   (+ 2 (slot-value ext 'size)))
 
+(defun make-client-hello (supported-ciphers session-id extensions)
+  (make-instance
+   'client-hello
+   :session-id session-id
+   :ciphers supported-ciphers
+   :compression '(0)
+   :extensions extensions
+   :handshake-type +CLIENT-HELLO+
+   :size (+
+	  2 32 (1+ (length session-id))
+	  2 (* 2 (length supported-ciphers))
+	  2 ;; compression schemes (we send only 1)
+	  (reduce #'+ (mapcar #'tls-extension-size extensions)))))
+
 (defun make-server-hello (selected-cipher session-id extensions)
   (format t "extensions length = ~a~%"
 	  (reduce #'+ (mapcar #'tls-extension-size extensions)))
