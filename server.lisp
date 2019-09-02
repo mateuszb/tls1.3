@@ -1,18 +1,28 @@
 (in-package :tls)
 
 (defvar *mode*)
+(defvar *acceptor*)
+(defvar *reader*)
+(defvar *writer*)
+(defvar *alerter*)
+(defvar *disconnector*)
 
-(defun start-server (port)
+(defun start-server (port accept-fn read-fn write-fn alert-fn disconnect-fn)
   (let ((dispatcher (make-dispatcher))
 	(*connections* (make-hash-table)))
-    (with-dispatcher (dispatcher)
-      (let ((srv-socket (make-tcp-listen-socket port)))
-	(set-non-blocking srv-socket)
-	(on-read srv-socket #'accept-tls-connection)
-	(loop
-	   do
-	     (let ((events (wait-for-events)))
-	       (dispatch-events events)))))))
+    (let ((*acceptor* accept-fn)
+	  (*reader* read-fn)
+	  (*writer* write-fn)
+	  (*alerter* alert-fn)
+	  (*disconnector* disconnect-fn))
+      (with-dispatcher (dispatcher)
+	(let ((srv-socket (make-tcp-listen-socket port)))
+	  (set-non-blocking srv-socket)
+	  (on-read srv-socket #'accept-tls-connection)
+	  (loop
+	     do
+	       (let ((events (wait-for-events)))
+		 (dispatch-events events))))))))
 
 (defun accept-tls-connection (ctx event)
   (declare (ignore event))
@@ -21,8 +31,23 @@
      again
        (handler-case
 	   (let ((new-socket (socket::accept socket)))
-	     (set-non-blocking new-socket)
-	     (on-read new-socket #'tls-rx)
+	     (let ((newctx
+		    (make-tls-connection
+		     new-socket
+		     :CLIENT-HELLO
+		     nil
+		     *acceptor*
+		     *reader*
+		     *writer*
+		     *alerter*
+		     *disconnector*)))
+
+	       (when (accept-fn newctx)
+		 (let ((newdata (funcall (accept-fn newctx) newctx)))
+		   (setf (data newctx) newdata)))
+
+	       (set-non-blocking new-socket)
+	       (on-read new-socket #'tls-rx newctx))
 	     (go again))
 	 (operation-interrupted () (go again))
 	 (operation-would-block ())))))
@@ -57,6 +82,8 @@
       (loop
 	 while (plusp (alien-ring:ring-buffer-size (stream-buffer tx)))
 	 do
+	   (format t "transferring ~a bytes of data~%"
+		   (alien-ring:ring-buffer-size (stream-buffer tx)))
 	   (handler-case
 	       (tx-from-buffer
 		sd (stream-buffer tx)
@@ -76,9 +103,6 @@
   (let* ((sd (context-socket ctx))
 	 (nbytes (socket:get-rxbytes sd))
 	 (*mode* :SERVER))
-    (unless (context-data ctx)
-      (setf (context-data ctx) (make-tls-connection sd :CLIENT-HELLO)))
-
     (let ((tls (context-data ctx)))
       (with-slots (rx rxbuf) tls
 	;; read pending bytes from the socket into the tls buffer
@@ -90,12 +114,9 @@
 	   while (>= (alien-ring::ring-buffer-size (stream-buffer rx)) 5)
 	   do
 	     (let ((hdr (read-value 'tls-record rx)))
-	       (format t "records=~a~%" (tls-records tls))
 	       (if (tls-records tls)
 		   (nconc (tls-records tls) (list hdr))
 		   (setf (tls-records tls) (list hdr)))
-	       (format t "after nconc records=~a~%" (tls-records tls))
-	       (format t "tls record len = ~a~%" (size hdr))
 	       (cond
 		 ;; check if the ring buffer has enough data for a
 		 ;; complete record and if so, process it immediately
@@ -108,14 +129,16 @@
 		  ;; can't read the packet yet because it could have
 		  ;; been fragmented across many records
 
-		  ;; transfer the record bytes between buffers
+		  ;; transfer the record bytes from the RX stream into
+		  ;; TLS-RX de-encapsulating from the record layer
 		  (transfer-rx-record tls hdr)
-		  (format t "processing list of ~a records~%" (tls-records tls))
+
+		  ;; process de-encapsulated records until we reach the
+		  ;; end of the list or an incomplete record
 		  (loop
 		     while (tls-records tls)
 		     while (record-completep tls)
 		     do
-		       (format t "first record = ~a~%" (first (tls-records tls)))
 		       (process-record tls)
 		       (let ((records (tls-records tls)))
 			 (cond
@@ -123,11 +146,10 @@
 			   (t
 			    (rplaca records (cadr records))
 			    (rplacd records (cddr records))
-			    (setf (tls-records tls) records))))
-		       (format t "records is now ~a~%" (tls-records tls))))
+			    (setf (tls-records tls) records))))))
 
 		 ;; if not enough data present, we need to wait for
-		 ;; another read event so we do nothing
+		 ;; another read event to continue filling the record
 		 ((< (alien-ring::ring-buffer-size (stream-buffer rx))
 		     (size hdr))))))))))
 
@@ -232,7 +254,15 @@
 		    (error "todo: send an alert and abort the connection")))))))
 
 	(:NEGOTIATED
-	 (decrypt-record tls (first (tls-records tls))))))))
+	 (decrypt-record tls (first (tls-records tls)))
+
+	 (when (plusp (stream-size (rx-data-stream tls)))
+	   (format t "calling reader function with data ~a~%" (data tls))
+	   (funcall (read-fn tls)
+		    (data tls)
+		    (stream-size (rx-data-stream tls))))
+
+	 )))))
 
 (defun array= (a b)
   (unless (= (length a) (length b))
@@ -512,6 +542,7 @@
 		(format t "bytes: ~a~%" plaintext)
 		(write-sequence plaintext (rx-data-stream tls) :start 0 :end (1- (length plaintext)))))
 	     ;; TODO: signal data available for reading by calling some
+
 	     ;; callback?
 	     )))))))
 
