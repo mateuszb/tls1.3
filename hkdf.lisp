@@ -21,14 +21,11 @@
 (defun hkdf-extract (salt ikm &key (hash :sha384))
   (etypecase salt
     (string
-     (format t "string case~%")
      (compute-hmac hash (ironclad:ascii-string-to-byte-array salt) ikm))
     (array
-     (format t "array case. salt=~a~%" (ironclad:byte-array-to-hex-string salt))
      (compute-hmac hash salt ikm))
-
     (null
-     (format t "null case~%") (compute-hmac hash (make-empty-array 0) ikm))))
+     (compute-hmac hash (make-empty-array 0) ikm))))
 
 (defun hkdf-expand (prk info len &key (hash :sha384))
   (let ((n (ceiling (/ len (hash-len hash)))))
