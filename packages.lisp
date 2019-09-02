@@ -7,9 +7,12 @@
 		:ring-buffer-read-byte-sequence
 		:ring-buffer-write-byte-sequence
 		:make-binary-ring-stream
+		:stream-space-available
 		:stream-peek-byte
 		:stream-buffer
-		:stream-size)
+		:stream-size
+		:with-output-to-byte-sequence)
+
   (:import-from :socket
 		:set-non-blocking
 		:operation-interrupted
@@ -20,6 +23,7 @@
 		:connect
 		:disconnect
 		:get-host-addr)
+
   (:import-from :reactor.dispatch
 		:del-write
 		:del-read
@@ -37,6 +41,10 @@
 		:dispatcher-reactor
 		:socket-context
 		:make-context)
+
+  (:import-from :flexi-streams
+		:with-input-from-sequence)
+
   (:import-from :reactor
 		:reactor-handle)
   (:export
@@ -49,4 +57,5 @@
    :data
    :socket
    :start-server
-   :tls-read))
+   :tls-read
+   :tls-write))
