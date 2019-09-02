@@ -68,8 +68,9 @@
   (let ((nsent 0))
     (loop for loc in (alien-ring::ring-buffer-read-locations buf n)
        do
-	 (let* ((bufaddr (sb-sys:sap+ (alien-ring::ring-buffer-ptr buf) (car loc)))
-		(ret (socket::send sd bufaddr n)))
+	 (let* ((xfer-size (cdr loc))
+		(bufaddr (sb-sys:sap+ (alien-ring::ring-buffer-ptr buf) (car loc)))
+		(ret (socket::send sd bufaddr xfer-size)))
 	   (alien-ring::ring-buffer-advance-rd buf ret)
 	   (incf nsent ret)))
     nsent))
@@ -80,14 +81,44 @@
 	 (tls (context-data ctx)))
     (with-slots (tx) tls
       (loop
-	 while (plusp (alien-ring:ring-buffer-size (stream-buffer tx)))
+	 while (or (plusp (alien-ring:stream-size tx))
+		   (and (plusp (stream-space-available tx))
+			(plusp (queue-count (tx-queue tls)))))
 	 do
-	   (format t "transferring ~a bytes of data~%"
-		   (alien-ring:ring-buffer-size (stream-buffer tx)))
+	   (format t "ring buffer has ~a bytes to xfer~%" (stream-size tx))
 	   (handler-case
-	       (tx-from-buffer
-		sd (stream-buffer tx)
-		(alien-ring:ring-buffer-size (stream-buffer tx)))
+	       (progn
+		 (tx-from-buffer sd (stream-buffer tx) (stream-size tx))
+
+		 (when (plusp (queue-count (tx-queue tls)))
+		  (let ((min-xfer (+ 1 5 16))
+			(free-space (alien-ring:ring-buffer-available (stream-buffer tx))))
+		    (when (> free-space min-xfer)
+		      (format t "ring free space: ~a~%" free-space)
+		      (let ((elem (queue-peek (tx-queue tls))))
+			(format t "current element has xfered so far: ~a bytes~%" (car elem))
+			(let ((remaining (- (length (cdr elem)) (car elem))))
+			  (format t "remaining bytes: ~a~%" remaining)
+			  (let ((xfer-size (min (- free-space min-xfer) remaining)))
+			    (format t "next xfer size: ~a~%" xfer-size)
+
+			    (let ((record (make-instance 'tls-record
+							 :size (+ 16 1 xfer-size)
+							 :content-type +RECORD-APPLICATION-DATA+)))
+			      (write-value 'tls-record (tx-stream tls) record)
+			      (let ((next-xfer-seq (subseq (cdr elem) (car elem) (+ (car elem) xfer-size))))
+				(multiple-value-bind (ciphertext authtag)
+				    (encrypt-data tls next-xfer-seq)
+				  (write-sequence ciphertext (tx-stream tls))
+				  (write-sequence authtag (tx-stream tls)))))
+
+			    (incf (car elem) xfer-size)
+			    (format t "total scheduled xfers ~a out of ~a bytes~%"
+				    (car elem) (length (cdr elem)))
+			    (when (= (car elem) (length (cdr elem)))
+			      (format t "xfer complete. dequeuing.~%")
+			      (dequeue (tx-queue tls))))))))))
+
 	     (operation-would-block ()
 	       (loop-finish))
 
@@ -95,6 +126,7 @@
 
       (when (alien-ring:ring-buffer-empty-p (stream-buffer tx))
 	;; no more data to send. disable write notifications
+	(format t "disabling write notification~%")
 	(del-write sd)))))
 
 (defun tls-rx (ctx event)
@@ -193,17 +225,14 @@
 (defun get-out-nonce! (tls)
   (let ((nonce (nonce-out tls)))
     (incf (nonce-out tls))
-    (format t "new out nonce=~a~%" (nonce-out tls))
     nonce))
 
 (defun get-in-nonce! (tls)
   (let ((nonce (nonce-in tls)))
     (incf (nonce-in tls))
-    (format t "new in nonce=~a~%" (nonce-in tls))
     nonce))
 
 (defun reset-nonces! (tls)
-  (format t "resetting nonces to 0 after key change~%")
   (setf (nonce-in tls) 0
 	(nonce-out tls) 0))
 
@@ -227,7 +256,6 @@
 
 	(:SERVER-HELLO
 	 ;; watch out for client cipher change spec here...
-	 (format t "HERE~%")
 	 (cond
 	   ((eq content-type 'change-cipher-spec)
 	    (format t "cipher spec arrived with value of ~a~%"
@@ -235,7 +263,6 @@
 	 (setf (state tls) :SERVER-FINISHED))
 
 	(:SERVER-FINISHED
-	 (format t "decrypting and processing record...~%")
 	 (let ((record (decrypt-record tls (first (tls-records tls)))))
 	   (etypecase record
 	     (change-cipher-spec
@@ -248,7 +275,6 @@
 
 		(if (array= data (data record))
 		    (progn
-		      (format t "switching to using application data keys~%")
 		      (reset-nonces! tls)
 		      (setf (state tls) :NEGOTIATED))
 		    (error "todo: send an alert and abort the connection")))))))
@@ -257,7 +283,6 @@
 	 (decrypt-record tls (first (tls-records tls)))
 
 	 (when (plusp (stream-size (rx-data-stream tls)))
-	   (format t "calling reader function with data ~a~%" (data tls))
 	   (funcall (read-fn tls)
 		    (data tls)
 		    (stream-size (rx-data-stream tls))))
@@ -303,8 +328,7 @@
 			    :size 1))
 	(msg (make-instance 'change-cipher-spec)))
     (write-value (type-of rec) (tx-stream tls) rec)
-    (write-value (type-of msg) (tx-stream tls) msg)
-    #+off(tls::write-value (type-of msg) (digest-stream tls) msg)))
+    (write-value (type-of msg) (tx-stream tls) msg)))
 
 (defun send-server-hello (tls client-hello)
   (with-slots (txbuf state current-record) tls
@@ -376,13 +400,10 @@
 		(client-hs-iv tls) civ))
 
 	(transfer-tx-record tls server-hello)
-	(on-write (socket tls) #'tls-tx)
-	#+off(send-server-certificate tls)))))
+	(on-write (socket tls) #'tls-tx)))))
 
 (defun scan-for-content-type (plaintext)
   (loop for i downfrom (1- (length plaintext)) to 0
-     do
-       (format t "pos = ~a~%" i)
      while (zerop (aref plaintext i))
      finally (return i)))
 
@@ -399,9 +420,6 @@
 
 (defun make-aead-aes256-gcm (key orig-iv counter)
   (let ((iv (xor-initialization-vector orig-iv counter)))
-    (format t "making AES256-GCM with nonce=~a~%" counter)
-    (format t "original IV: ~a~%" orig-iv)
-    (format t "new IV     : ~a~%" iv)
     (ironclad:make-authenticated-encryption-mode
      :gcm :cipher-name :aes :key key
      :initialization-vector iv)))
@@ -409,17 +427,7 @@
 (defun send-server-certificate (tls)
   (let* ((x509cert (read-x509-certificate #p"~/ssl-dev/server.der" :der))
 	 (exts (make-encrypted-extensions '()))
-	 (certmsg (make-server-certificate (bytes x509cert)))
-	 (tmp-aead (ironclad:make-authenticated-encryption-mode
-	   :gcm :cipher-name :aes :key (server-hs-key tls)
-	   :initialization-vector (server-hs-iv tls))))
-    #+off
-    (setf (srv-hs-aead tls)
-
-	  (cli-hs-aead tls)
-	  (ironclad:make-authenticated-encryption-mode
-	   :gcm :cipher-name :aes :key (client-hs-key tls)
-	   :initialization-vector (client-hs-iv tls)))
+	 (certmsg (make-server-certificate (bytes x509cert))))
 
     ;; update handshake digest
     (write-value (type-of exts) (digest-stream tls) exts)
@@ -472,10 +480,6 @@
 		 (ciphertext (encrypt-messages aead
 			      (list exts certmsg cert-verify finished)
 			      +RECORD-HANDSHAKE+))
-		 (ciphertext2 (encrypt-messages
-			       tmp-aead
-			       (list exts certmsg cert-verify finished)
-			       +RECORD-HANDSHAKE+))
 		 (rec (make-instance 'tls-record :size (+ 16 (length ciphertext))
 				     :content-type +RECORD-APPLICATION-DATA+)))
 	    (write-value 'tls-record (tx-stream tls) rec)
@@ -493,17 +497,13 @@
 		  (server-app-iv tls) siv
 		  (client-app-secret tls) cs
 		  (client-app-key tls) ck
-		  (client-app-iv tls) civ))
-
-	  #+off(setf (state tls) :SERVER-FINISHED))))))
+		  (client-app-iv tls) civ)))))))
 
 (defun decrypt-record (tls hdr)
   (let ((ciphertext (make-array (size hdr) :element-type '(unsigned-byte 8)))
-	;;(authtag (make-array 16 :element-type '(unsigned-byte 8)))
 	(assocdata
 	 (ironclad:hex-string-to-byte-array (format nil "170303~4,'0x" (size hdr)))))
     (read-sequence ciphertext (tls-rx-stream tls))
-    (format t "ciphertext: ~a~%" ciphertext)
     (let ((aead (case (state tls)
 		  (:SERVER-FINISHED (make-aead-aes256-gcm (client-hs-key tls)
 							  (client-hs-iv tls)
@@ -525,29 +525,36 @@
 	       (type (tls-content->class (aref plaintext content-type-pos))))
 	  (case (state tls)
 	    (:SERVER-FINISHED
-	     (flexi-streams:with-input-from-sequence
-	      (in plaintext)
-	      (read-value type in)))
+	     ;; TODO: read the cipher spec change here?
+	     (with-input-from-sequence (in plaintext)
+	       (read-value type in)))
 	    (:NEGOTIATED
 	     (ecase type
 	       (alert
-		(format t "alert arrived~%")
-		(flexi-streams:with-input-from-sequence (in plaintext)
-							(inspect (read-value type in))))
+		(let ((alert))
+		  (with-input-from-sequence (in plaintext)
+		    (setf alert (read-value type in)))
+		  (with-slots (level description) alert
+		    (format t "alert ~a.~a arrived~%" level description)
+		    (cond
+		      ((= level +ALERT-FATAL+)
+		       ;; TODO: kill the connection
+		       )
+		      ((= level +ALERT-WARNING+)
+		       ;; TODO: also kill the connection :)
+		       ))
+		    )))
 
 	       (application-data
 		;; write the application data to the decrypted RX stream
-		(format t "transfering data '~a' into rx buffer"
-			(map 'string #'code-char (subseq plaintext 0 (1- (length plaintext)))))
-		(format t "bytes: ~a~%" plaintext)
-		(write-sequence plaintext (rx-data-stream tls) :start 0 :end (1- (length plaintext)))))
-	     ;; TODO: signal data available for reading by calling some
-
-	     ;; callback?
-	     )))))))
+		(write-sequence
+		 plaintext
+		 (rx-data-stream tls)
+		 :start 0 :end
+		 (1- (length plaintext))))))))))))
 
 (defun gen-aead-data (size)
-  (alien-ring::with-output-to-byte-sequence (buf 5)
+  (with-output-to-byte-sequence (buf 5)
     (let ((data (make-aead-data (+ 16 size))))
       (write-value (type-of data) buf data))))
 
