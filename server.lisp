@@ -6,15 +6,19 @@
 (defvar *writer*)
 (defvar *alerter*)
 (defvar *disconnector*)
+(defvar *cert-path*)
+(defvar *key-path*)
 
-(defun start-server (port accept-fn read-fn write-fn alert-fn disconnect-fn)
+(defun start-server (cert-path key-path port accept-fn read-fn write-fn alert-fn disconnect-fn)
   (let ((dispatcher (make-dispatcher))
 	(*connections* (make-hash-table)))
     (let ((*acceptor* accept-fn)
 	  (*reader* read-fn)
 	  (*writer* write-fn)
 	  (*alerter* alert-fn)
-	  (*disconnector* disconnect-fn))
+	  (*disconnector* disconnect-fn)
+	  (*cert-path* cert-path)
+	  (*key-path* key-path))
       (with-dispatcher (dispatcher)
 	(let ((srv-socket (make-tcp-listen-socket port)))
 	  (set-non-blocking srv-socket)
@@ -425,7 +429,7 @@
      :initialization-vector iv)))
 
 (defun send-server-certificate (tls)
-  (let* ((x509cert (read-x509-certificate #p"~/ssl-dev/server.der" :der))
+  (let* ((x509cert (read-x509-certificate *cert-path* :der))
 	 (exts (make-encrypted-extensions '()))
 	 (certmsg (make-server-certificate (bytes x509cert))))
 
@@ -435,7 +439,7 @@
 
     (let ((signature
 	   (ironclad:sign-message
-	    (load-private-key-der #p"~/ssl-dev/key.der")
+	    (load-private-key-der *key-path*)
 	    (alien-ring::with-output-to-byte-sequence (out (+ 64 33 1 48))
 	      (let ((space-vector
 		     (make-array 64 :element-type '(unsigned-byte 8) :initial-element #x20))
@@ -447,7 +451,6 @@
 		(write-sequence (ironclad:produce-digest (digest-stream tls)) out)))
 	    :pss :sha256)))
 
-      (format t "signature=~a~%" signature)
       (let ((cert-verify
 	     (make-instance
 	      'certificate-verify
@@ -561,11 +564,8 @@
 (defun encrypt-messages (gcm msgs content-type)
   (let* ((total-size (+ 1 (reduce #'+ (mapcar #'tls-size msgs))))
 	 (aead-data (gen-aead-data total-size)))
-    (format t "aead data = ~a~%" (ironclad:byte-array-to-hex-string aead-data))
-    (format t "total calculated size is ~a~%" total-size)
     (let ((plaintext
 	   (alien-ring::with-output-to-byte-sequence (out total-size)
-	     (format t "msgs=~a~%" msgs)
 	     (loop for msg in msgs
 		do (write-value (type-of msg) out msg))
 	     (write-value 'u8 out content-type))))
