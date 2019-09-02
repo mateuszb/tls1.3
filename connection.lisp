@@ -53,6 +53,10 @@
    (alert-fn :accessor alert-fn :initarg :alert-fn)
    (disconnect-fn :accessor disconnect-fn :initarg :disconnect-fn)
 
+   ;; overflow transmit queue of 512 slots
+   (tx-queue :initform (make-queue 512) :reader tx-queue)
+
+   ;; user data
    (data :accessor data :initarg :data)))
 
 (defclass tls12-connection (tls-connection)
@@ -83,3 +87,44 @@
     (let ((seq (make-array read-size :element-type '(unsigned-byte 8) :initial-element 0)))
       (read-sequence seq (rx-data-stream tls))
       seq)))
+
+(defun encrypt-data (tls data)
+  (let* ((total-size (1+ (length data)))
+	 (aead-data (gen-aead-data total-size))
+	 (aead (make-aead-aes256-gcm
+		(server-app-key tls)
+		(server-app-iv tls)
+		(get-out-nonce! tls))))
+    (values
+     (ironclad:encrypt-message
+      aead
+      (with-output-to-byte-sequence (out total-size)
+	(write-sequence data out)
+	(write-value 'u8 out +RECORD-APPLICATION-DATA+))
+      :associated-data aead-data)
+     (ironclad:produce-tag aead))))
+
+(defun tls-write (tls seq)
+  (let* ((free-space (stream-space-available (tx-stream tls)))
+	 (minsize (+ 1 5 16))
+	 (xfer-size 0))
+    ;; first, fill out as much space as available in the tx-stream
+    (when (> free-space minsize)
+      ;; we can send at least 1 byte here and 22 bytes of header, tag
+      ;; and content type markers
+      (setf xfer-size (min (length seq) (- free-space minsize)))
+      (let ((record (make-instance 'tls-record
+				   :size (+ 16 1 xfer-size)
+				   :content-type +RECORD-APPLICATION-DATA+)))
+	(write-value 'tls-record (tx-stream tls) record)
+	(multiple-value-bind (ciphertext authtag)
+	    (encrypt-data tls (subseq seq 0 xfer-size))
+	  (write-sequence ciphertext (tx-stream tls))
+	  (write-sequence authtag (tx-stream tls))))
+
+      ;; now, enqueue the overflow data into the tx queue
+      ;; where the tx loop will periodically fetch it from and send over
+      )
+    (let ((remaining (subseq seq xfer-size)))
+      (enqueue (cons 0 remaining) (tx-queue tls)))
+    (on-write (socket tls) #'tls-tx)))
