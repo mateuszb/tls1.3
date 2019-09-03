@@ -133,6 +133,20 @@
 	(format t "disabling write notification~%")
 	(del-write sd)))))
 
+(defun send-alert (tls level desc)
+  (let ((alert (make-instance 'alert :level level :description desc))
+	(hdr (make-instance 'tls-record :content-type +RECORD-ALERT+ :size 2)))
+    (write-value 'tls-record (tx-stream tls) hdr)
+    (write-value 'alert (tx-stream tls) alert)))
+
+(defun send-protocol-alert (ctx evt)
+  (let* ((sd (context-socket ctx))
+	 (tls (context-data ctx)))
+    (send-alert tls +ALERT-FATAL+ +PROTOCOL-VERSION+)
+    (tls-tx ctx evt)
+    (rem-socket sd)
+    (disconnect sd)))
+
 (defun tls-rx (ctx event)
   "Top level read notification handler to plug into the reactor."
   (declare (ignore event))
@@ -150,15 +164,32 @@
 	   while (>= (alien-ring::ring-buffer-size (stream-buffer rx)) 5)
 	   do
 	     (let ((hdr (read-value 'tls-record rx)))
+	       ;; sanity check the record header and only allow
+	       ;; TLS-1.2 because the field is obsoleted. anything
+	       ;; less than TLS 1.2 is dropped
+	       (unless (and
+			(member (content-type hdr)
+				(list +RECORD-HANDSHAKE+
+				      +RECORD-APPLICATION-DATA+
+				      +RECORD-CHANGE-CIPHER-SPEC+
+				      +RECORD-ALERT+
+				      +RECORD-HEARTBEAT+)				)
+			(= (protocol-version hdr) +TLS-1.2+))
+
+		 ;; stop reading from this socket
+		 (del-read (socket tls))
+
+		 ;; on next write, we send the protocol alert
+		 (on-write sd #'send-protocol-alert tls)
+		 (return-from tls-rx))
+
 	       (if (tls-records tls)
 		   (nconc (tls-records tls) (list hdr))
 		   (setf (tls-records tls) (list hdr)))
 	       (cond
 		 ;; check if the ring buffer has enough data for a
 		 ;; complete record and if so, process it immediately
-		 ((>= (alien-ring::ring-buffer-size (stream-buffer rx))
-		      (size hdr))
-
+		 ((>= (alien-ring:stream-size rx) (size hdr))
 		  ;; here, we need to read the packet bytes and transfer
 		  ;; them into another buffer that is aggregating
 		  ;; fragments into complete higher level packets.  we
@@ -186,8 +217,7 @@
 
 		 ;; if not enough data present, we need to wait for
 		 ;; another read event to continue filling the record
-		 ((< (alien-ring::ring-buffer-size (stream-buffer rx))
-		     (size hdr))))))))))
+		 ((< (alien-ring:stream-size rx) (size hdr))))))))))
 
 
 (defun transfer-rx-record (tls hdr)
@@ -250,6 +280,11 @@
 	 ;; peek at the sequence and compute the hash
 	 (let ((client-hello (let ((*mode* :CLIENT))
 			       (read-value content-type tlsrx))))
+
+	   (when (/= (get-version client-hello) +TLS-1.3+)
+	     (on-write (socket tls) #'send-protocol-alert tls)
+	     (del-read (socket tls))
+	     (return-from process-record))
 
 	   ;; process the record here...
 	   (setf (state tls) :SERVER-HELLO)
