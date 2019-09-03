@@ -167,14 +167,15 @@
 	       ;; sanity check the record header and only allow
 	       ;; TLS-1.2 because the field is obsoleted. anything
 	       ;; less than TLS 1.2 is dropped
-	       (unless (and
-			(member (content-type hdr)
-				(list +RECORD-HANDSHAKE+
-				      +RECORD-APPLICATION-DATA+
-				      +RECORD-CHANGE-CIPHER-SPEC+
-				      +RECORD-ALERT+
-				      +RECORD-HEARTBEAT+)				)
-			(= (protocol-version hdr) +TLS-1.2+))
+	       (format t "content-type: ~a~%" (content-type hdr))
+	       (format t "protocol ver: ~2,'0x~%" (protocol-version hdr))
+	       (unless (member
+			(content-type hdr)
+			(list +RECORD-HANDSHAKE+
+			      +RECORD-APPLICATION-DATA+
+			      +RECORD-CHANGE-CIPHER-SPEC+
+			      +RECORD-ALERT+
+			      +RECORD-HEARTBEAT+))
 
 		 ;; stop reading from this socket
 		 (del-read (socket tls))
