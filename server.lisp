@@ -169,13 +169,19 @@
 	       ;; less than TLS 1.2 is dropped
 	       (format t "content-type: ~a~%" (content-type hdr))
 	       (format t "protocol ver: ~2,'0x~%" (protocol-version hdr))
-	       (unless (member
-			(content-type hdr)
-			(list +RECORD-HANDSHAKE+
-			      +RECORD-APPLICATION-DATA+
-			      +RECORD-CHANGE-CIPHER-SPEC+
-			      +RECORD-ALERT+
-			      +RECORD-HEARTBEAT+))
+	       (unless (and
+			(member
+			 (content-type hdr)
+			 (list +RECORD-HANDSHAKE+
+			       +RECORD-APPLICATION-DATA+
+			       +RECORD-CHANGE-CIPHER-SPEC+
+			       +RECORD-ALERT+
+			       +RECORD-HEARTBEAT+))
+			(member
+			 (protocol-version hdr)
+			 (list +TLS-1.0+
+			       +TLS-1.1+
+			       +TLS-1.2+)))
 
 		 ;; stop reading from this socket
 		 (del-read (socket tls))
