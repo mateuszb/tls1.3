@@ -31,6 +31,8 @@
 (defconstant +signature-algorithms-cert+ 50)
 (defconstant +key-share+ 51)
 
+(defconstant +TLS-1.0+ #x0301)
+(defconstant +TLS-1.1+ #x0302)
 (defconstant +TLS-1.2+ #x0303)
 (defconstant +TLS-1.3+ #x0304)
 
