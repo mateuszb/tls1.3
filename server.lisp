@@ -147,6 +147,14 @@
     (rem-socket sd)
     (disconnect sd)))
 
+(defun send-insufficient-security-alert (ctx evt)
+  (let* ((sd (context-socket ctx))
+	 (tls (context-data ctx)))
+    (send-alert tls +ALERT-FATAL+ +INSUFFICIENT-SECURITY+)
+    (tls-tx ctx evt)
+    (rem-socket sd)
+    (disconnect sd)))
+
 (defun tls-rx (ctx event)
   "Top level read notification handler to plug into the reactor."
   (declare (ignore event))
@@ -154,77 +162,82 @@
 	 (nbytes (socket:get-rxbytes sd))
 	 (*mode* :SERVER))
     (let ((tls (context-data ctx)))
-      (with-slots (rx rxbuf) tls
-	;; read pending bytes from the socket into the tls buffer
-	(rx-into-buffer sd (stream-buffer rx) nbytes)
+      (handler-case
+       (with-slots (rx rxbuf) tls
+	 ;; read pending bytes from the socket into the tls buffer
+	 (rx-into-buffer sd (stream-buffer rx) nbytes)
 
-	;; read the record header (5 bytes) from the rx queue
-	;; and push it to the records list.
-	(loop
-	   while (>= (alien-ring::ring-buffer-size (stream-buffer rx)) 5)
-	   do
-	     (let ((hdr (read-value 'tls-record rx)))
-	       ;; sanity check the record header and only allow
-	       ;; TLS-1.2 because the field is obsoleted. anything
-	       ;; less than TLS 1.2 is dropped
-	       (format t "content-type: ~a~%" (content-type hdr))
-	       (format t "protocol ver: ~2,'0x~%" (protocol-version hdr))
-	       (unless (and
-			(member
-			 (content-type hdr)
-			 (list +RECORD-HANDSHAKE+
-			       +RECORD-APPLICATION-DATA+
-			       +RECORD-CHANGE-CIPHER-SPEC+
-			       +RECORD-ALERT+
-			       +RECORD-HEARTBEAT+))
-			(member
-			 (protocol-version hdr)
-			 (list +TLS-1.0+
-			       +TLS-1.1+
-			       +TLS-1.2+)))
+	 ;; read the record header (5 bytes) from the rx queue
+	 ;; and push it to the records list.
+	 (loop
+	    while (>= (alien-ring::ring-buffer-size (stream-buffer rx)) 5)
+	    do
+	      (let ((hdr (read-value 'tls-record rx)))
+		;; sanity check the record header and only allow
+		;; TLS-1.2 because the field is obsoleted. anything
+		;; less than TLS 1.2 is dropped
+		(format t "content-type: ~a~%" (content-type hdr))
+		(format t "protocol ver: ~2,'0x~%" (protocol-version hdr))
+		(unless (and
+			 (member
+			  (content-type hdr)
+			  (list +RECORD-HANDSHAKE+
+				+RECORD-APPLICATION-DATA+
+				+RECORD-CHANGE-CIPHER-SPEC+
+				+RECORD-ALERT+
+				+RECORD-HEARTBEAT+))
+			 (member
+			  (protocol-version hdr)
+			  (list +TLS-1.0+
+				+TLS-1.1+
+				+TLS-1.2+)))
 
-		 ;; stop reading from this socket
-		 (del-read (socket tls))
+		  ;; stop reading from this socket
+		  (del-read (socket tls))
 
-		 ;; on next write, we send the protocol alert
-		 (on-write sd #'send-protocol-alert tls)
-		 (return-from tls-rx))
+		  ;; on next write, we send the protocol alert
+		  (on-write sd #'send-protocol-alert tls)
+		  (return-from tls-rx))
 
-	       (if (tls-records tls)
-		   (nconc (tls-records tls) (list hdr))
-		   (setf (tls-records tls) (list hdr)))
-	       (cond
-		 ;; check if the ring buffer has enough data for a
-		 ;; complete record and if so, process it immediately
-		 ((>= (alien-ring:stream-size rx) (size hdr))
-		  ;; here, we need to read the packet bytes and transfer
-		  ;; them into another buffer that is aggregating
-		  ;; fragments into complete higher level packets.  we
-		  ;; can't read the packet yet because it could have
-		  ;; been fragmented across many records
+		(if (tls-records tls)
+		    (nconc (tls-records tls) (list hdr))
+		    (setf (tls-records tls) (list hdr)))
+		(cond
+		  ;; check if the ring buffer has enough data for a
+		  ;; complete record and if so, process it immediately
+		  ((>= (alien-ring:stream-size rx) (size hdr))
+		   ;; here, we need to read the packet bytes and transfer
+		   ;; them into another buffer that is aggregating
+		   ;; fragments into complete higher level packets.  we
+		   ;; can't read the packet yet because it could have
+		   ;; been fragmented across many records
 
-		  ;; transfer the record bytes from the RX stream into
-		  ;; TLS-RX de-encapsulating from the record layer
-		  (transfer-rx-record tls hdr)
+		   ;; transfer the record bytes from the RX stream into
+		   ;; TLS-RX de-encapsulating from the record layer
+		   (transfer-rx-record tls hdr)
 
-		  ;; process de-encapsulated records until we reach the
-		  ;; end of the list or an incomplete record
-		  (loop
-		     while (tls-records tls)
-		     while (record-completep tls)
-		     do
-		       (process-record tls)
-		       (let ((records (tls-records tls)))
-			 (cond
-			   ((null (rest records)) (setf (tls-records tls) nil))
-			   (t
-			    (rplaca records (cadr records))
-			    (rplacd records (cddr records))
-			    (setf (tls-records tls) records))))))
+		   ;; process de-encapsulated records until we reach the
+		   ;; end of the list or an incomplete record
+		   (loop
+		      while (tls-records tls)
+		      while (record-completep tls)
+		      do
+			(process-record tls)
+			(let ((records (tls-records tls)))
+			  (cond
+			    ((null (rest records)) (setf (tls-records tls) nil))
+			    (t
+			     (rplaca records (cadr records))
+			     (rplacd records (cddr records))
+			     (setf (tls-records tls) records))))))
 
-		 ;; if not enough data present, we need to wait for
-		 ;; another read event to continue filling the record
-		 ((< (alien-ring:stream-size rx) (size hdr))))))))))
+		  ;; if not enough data present, we need to wait for
+		  ;; another read event to continue filling the record
+		  ((< (alien-ring:stream-size rx) (size hdr)))))))
+
+	(no-common-cipher ()
+	  (del-read (socket tls))
+	  (on-write (socket tls) #'send-insufficient-security-alert))))))
 
 
 (defun transfer-rx-record (tls hdr)
@@ -385,7 +398,7 @@
       ;; pick a common cipher
       (setf cipher (pick-common-cipher (ciphers client-hello)))
       (unless cipher
-	(error 'no-common-cipher-found))
+	(error (make-condition 'no-common-cipher)))
 
       ;; generate key pair
       (generate-keys tls :curve25519)
