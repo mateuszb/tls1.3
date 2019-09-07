@@ -84,6 +84,7 @@
   (let* ((sd (context-socket ctx))
 	 (tls (context-data ctx)))
     (with-slots (tx) tls
+      ;; call the tx handler ? see if the application has anything to send?
       (loop
 	 while (or (plusp (alien-ring:stream-size tx))
 		   (and (plusp (stream-space-available tx))
@@ -132,12 +133,6 @@
 	;; no more data to send. disable write notifications
 	(format t "disabling write notification~%")
 	(del-write sd)))))
-
-(defun send-alert (tls level desc)
-  (let ((alert (make-instance 'alert :level level :description desc))
-	(hdr (make-instance 'tls-record :content-type +RECORD-ALERT+ :size 2)))
-    (write-value 'tls-record (tx-stream tls) hdr)
-    (write-value 'alert (tx-stream tls) alert)))
 
 (defun send-protocol-alert (ctx evt)
   (let* ((sd (context-socket ctx))
@@ -238,7 +233,6 @@
 	(no-common-cipher ()
 	  (del-read (socket tls))
 	  (on-write (socket tls) #'send-insufficient-security-alert))))))
-
 
 (defun transfer-rx-record (tls hdr)
   (let ((*mode* :CLIENT))
