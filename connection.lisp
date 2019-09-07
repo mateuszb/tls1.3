@@ -123,16 +123,42 @@
       (setf xfer-size (min (length seq) (- free-space minsize)))
       (let ((record (make-instance 'tls-record
 				   :size (+ 16 1 xfer-size)
-				   :content-type +RECORD-APPLICATION-DATA+)))
+				   :content-type content-type)))
 	(write-value 'tls-record (tx-stream tls) record)
 	(multiple-value-bind (ciphertext authtag)
 	    (encrypt-data tls (subseq seq 0 xfer-size))
 	  (write-sequence ciphertext (tx-stream tls))
-	  (write-sequence authtag (tx-stream tls))))
-
-      ;; now, enqueue the overflow data into the tx queue
-      ;; where the tx loop will periodically fetch it from and send over
-      )
+	  (write-sequence authtag (tx-stream tls)))))
+    ;; now, enqueue the overflow data into the tx queue
+    ;; where the tx loop will periodically fetch it from and send over
     (let ((remaining (subseq seq xfer-size)))
       (enqueue (cons 0 remaining) (tx-queue tls)))
     (on-write (socket tls) #'tls-tx)))
+
+(defun alert->bytes (alert)
+  (with-output-to-byte-sequence (out 2)
+    (write-value 'alert out alert)))
+
+(defun send-alert (tls level desc)
+  (let ((alert (make-instance 'alert :level level :description desc))
+	(hdr (make-instance 'tls-record :content-type +RECORD-ALERT+ :size 2)))
+    (cond
+      ((encrypted-p tls)
+       (format t "encrypted alert")
+       (let ((record (make-instance 'tls-record :size (+ 16 1 2) :content-type +RECORD-APPLICATION-DATA+)))
+	(write-value 'tls-record (tx-stream tls) record)
+	(multiple-value-bind (ciphertext authtag)
+	    (encrypt-data tls (alert->bytes alert) +RECORD-ALERT+)
+	  (write-sequence ciphertext (tx-stream tls))
+	  (write-sequence authtag (tx-stream tls)))))
+      (t
+       (format t "not encrypted alert~%")
+       (write-value 'tls-record (tx-stream tls) hdr)
+       (write-value 'alert (tx-stream tls) alert))
+)))
+
+(defun tls-close (tls)
+  (send-alert tls +ALERT-WARNING+ +CLOSE-NOTIFY+))
+
+(defun encrypted-p (tls)
+  (eql (state tls) :NEGOTIATED))

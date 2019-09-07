@@ -67,4 +67,5 @@
    :socket
    :start-server
    :tls-read
-   :tls-write))
+   :tls-write
+   :tls-close))
