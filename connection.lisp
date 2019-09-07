@@ -88,7 +88,7 @@
       (read-sequence seq (rx-data-stream tls))
       seq)))
 
-(defun encrypt-data (tls data)
+(defun encrypt-data (tls data &optional (content-type +RECORD-APPLICATION-DATA+))
   (let* ((total-size (1+ (length data)))
 	 (aead-data (gen-aead-data total-size))
 	 (aead (make-aead-aes256-gcm
@@ -100,11 +100,19 @@
       aead
       (with-output-to-byte-sequence (out total-size)
 	(write-sequence data out)
-	(write-value 'u8 out +RECORD-APPLICATION-DATA+))
+	(write-value 'u8 out content-type))
       :associated-data aead-data)
      (ironclad:produce-tag aead))))
 
-(defun tls-write (tls seq)
+(defgeneric tls-write (tls seq &optional content-type))
+
+(defmethod tls-write (tls (seq string) &optional (content-type +RECORD-APPLICATION-DATA+))
+  (tls-write
+   tls
+   (map '(simple-array (integer 0 255) (*)) #'char-code seq)
+   content-type))
+
+(defmethod tls-write (tls (seq array) &optional (content-type +RECORD-APPLICATION-DATA+))
   (let* ((free-space (stream-space-available (tx-stream tls)))
 	 (minsize (+ 1 5 16))
 	 (xfer-size 0))
