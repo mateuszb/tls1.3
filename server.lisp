@@ -230,6 +230,10 @@
 		  ;; another read event to continue filling the record
 		  ((< (alien-ring:stream-size rx) (size hdr)))))))
 
+	(socket-eof ()
+	  (rem-socket (socket tls))
+	  (disconnect (socket tls)))
+
 	(no-common-cipher ()
 	  (del-read (socket tls))
 	  (on-write (socket tls) #'send-insufficient-security-alert))))))
@@ -317,7 +321,10 @@
 
 	(:SERVER-FINISHED
 	 (let ((record (decrypt-record tls (first (tls-records tls)))))
+	   (format t "record type=~a~%" (type-of record))
 	   (etypecase record
+	     (alert
+	      (format t "alert arrived: ~a:~a~%" (level record) (description record)))
 	     (change-cipher-spec
 	      (format t "peer running in compatibility mode. ignoring cipher change packet~%"))
 

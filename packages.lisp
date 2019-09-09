@@ -18,6 +18,7 @@
 		:operation-interrupted
 		:operation-would-block
 		:operation-in-progress
+		:socket-eof
 		:make-tcp-listen-socket
 		:make-tcp-socket
 		:connect
