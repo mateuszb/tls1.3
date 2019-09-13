@@ -51,7 +51,8 @@
 		   (setf (data newctx) newdata)))
 
 	       (set-non-blocking new-socket)
-	       (on-read new-socket #'tls-rx newctx))
+	       (on-read new-socket #'tls-rx newctx)
+	       (on-disconnect new-socket #'tls-disconnect))
 	     (go again))
 	 (operation-interrupted () (go again))
 	 (operation-would-block ())))))
@@ -134,7 +135,17 @@
 	(format t "disabling write notification~%")
 	(del-write sd)))))
 
+(defun send-close-notify (ctx evt)
+  (format t "sending close notify~%")
+  (let* ((sd (context-socket ctx))
+	 (tls (context-data ctx)))
+    (send-alert tls +ALERT-WARNING+ +CLOSE-NOTIFY+)
+    (tls-tx ctx evt)
+    (rem-socket sd)
+    (disconnect sd)))
+
 (defun send-protocol-alert (ctx evt)
+  (format t "sending protocol alert~%")
   (let* ((sd (context-socket ctx))
 	 (tls (context-data ctx)))
     (send-alert tls +ALERT-FATAL+ +PROTOCOL-VERSION+)
@@ -143,12 +154,24 @@
     (disconnect sd)))
 
 (defun send-insufficient-security-alert (ctx evt)
+  (format t "send insufficient security alert~%")
   (let* ((sd (context-socket ctx))
 	 (tls (context-data ctx)))
     (send-alert tls +ALERT-FATAL+ +INSUFFICIENT-SECURITY+)
     (tls-tx ctx evt)
     (rem-socket sd)
     (disconnect sd)))
+
+(defun tls-disconnect (ctx event)
+  "Top level handler for disconnect events."
+  (declare (ignore event))
+  (let* ((sd (context-socket ctx))
+	 (nbytes (socket:get-rxbytes sd))
+	 (*mode* :SERVER))
+    (let ((tls (context-data ctx)))
+      (rem-socket sd)
+      (format t "disconnecting in tls-disconnect~%")      
+      (disconnect sd))))
 
 (defun tls-rx (ctx event)
   "Top level read notification handler to plug into the reactor."
@@ -230,8 +253,14 @@
 		  ;; another read event to continue filling the record
 		  ((< (alien-ring:stream-size rx) (size hdr)))))))
 
+	(alert-arrived (a)
+	  (with-slots (alert) a
+	    (format t "alert arrived: ~a:~a~%" (level alert) (description alert))
+	    (on-write (socket tls) #'send-close-notify)))
+	
 	(socket-eof ()
 	  (rem-socket (socket tls))
+	  (format t "disconnecting on eof~%")
 	  (disconnect (socket tls)))
 
 	(no-common-cipher ()
@@ -595,14 +624,7 @@
 		    (setf alert (read-value type in)))
 		  (with-slots (level description) alert
 		    (format t "alert ~a.~a arrived~%" level description)
-		    (cond
-		      ((= level +ALERT-FATAL+)
-		       ;; TODO: kill the connection
-		       )
-		      ((= level +ALERT-WARNING+)
-		       ;; TODO: also kill the connection :)
-		       ))
-		    )))
+		    (error 'alert-arrived :alert alert))))
 
 	       (application-data
 		;; write the application data to the decrypted RX stream
