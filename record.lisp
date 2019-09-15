@@ -88,6 +88,7 @@
   (ecase handshake-type
     (1 'client-hello)
     (2 'server-hello)
+    (4 'new-session-ticket)
     (8 'encrypted-extensions)
     (11 'certificate)
     (15 'certificate-verify)
@@ -240,8 +241,13 @@
 (define-binary-class server-hello (handshake)
   ((protocol-version u16 :initform +TLS-1.2+)
    (random-bytes (raw-bytes :size 32)
-		 :initform (make-array 32 :element-type '(unsigned-byte 8) :initial-element 0))
-   (session-id (tls-list :size-type 'u8 :element-type 'u8 :element-size 1))
+		 :initform
+		 (make-array 32
+			     :element-type '(unsigned-byte 8)
+			     :initial-element 0))
+   (session-id (tls-list :size-type 'u8
+			 :element-type 'u8
+			 :element-size 1))
    (selected-cipher u16)
    (compression u8 :initform 0)
    (extensions (tls-list :size-type 'u16
@@ -274,12 +280,13 @@
 (defun make-server-certificate (bytes)
   (let ((certbytes bytes))
     (let ((certs (list (make-instance 'certificate-entry :certdata certbytes :extensions '()))))
-      (make-instance 'certificate
-		     :handshake-type +CERTIFICATE+
-		     :size (+ 1 (length '())
-			      3 (reduce #'+ (mapcar #'certificate-entry-size certs)))
-		     :certificate-request (make-array 0)
-		     :certificates certs))))
+      (make-instance
+       'certificate
+       :handshake-type +CERTIFICATE+
+       :size (+ 1 (length '())
+		3 (reduce #'+ (mapcar #'certificate-entry-size certs)))
+       :certificate-request (make-array 0)
+       :certificates certs))))
 
 (define-binary-class certificate-verify (handshake)
   ((signature-scheme u16 :initform 0)
@@ -290,7 +297,9 @@
 
 (define-binary-class encrypted-extensions (handshake)
   ((extensions
-    (tls-list :size-type 'u16 :element-type 'tls-extension :element-size #'tls-extension-size))))
+    (tls-list :size-type 'u16
+	      :element-type 'tls-extension
+	      :element-size #'tls-extension-size))))
 
 (defun make-encrypted-extensions (exts)
   (make-instance
@@ -320,3 +329,13 @@
 (define-binary-class alert ()
   ((level u8)
    (description u8)))
+
+(define-binary-class new-session-ticket (handshake)
+  ((lifetime u32)
+   (age-add u32)
+   (nonce (tls-list :size-type 'u8 :element-type 'u8 :element-size 1))
+   (ticket (tls-list :size-type 'u16 :element-type 'u8 :element-size 1))
+   (extensions
+    (tls-list :size-type 'u16
+	      :element-type 'tls-extension
+	      :element-size #'tls-extension-size))))
