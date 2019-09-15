@@ -20,8 +20,13 @@
 	       (:file "connection" :depends-on ("packages"))
 	       (:file "certificate" :depends-on ("packages"))
 	       (:file "condition" :depends-on ("packages"))
-	       (:file "server" :depends-on ("connection" "certificate" "record" "condition" "packages"))
-	       (:file "client" :depends-on ("connection"))
+	       (:file "util" :depends-on ("packages" "record" "constants"))
+	       (:file "server" :depends-on ("connection"
+					    "certificate"
+					    "record"
+					    "condition"
+					    "packages"))
+	       (:file "client" :depends-on ("connection" "util"))
 	       (:file "record" :depends-on ("serialization")))
   :in-order-to ((test-op (test-op "tls-1.3/test")))
   :description "A lightweight minimal tls1.3 library that is easy to integrate.")
