@@ -2,11 +2,22 @@
 
 (defun make-server-keyshare (group key-bytes)
   (let ((key-share
-	 (make-instance 'key-share :key-exchange key-bytes
+	 (make-instance 'key-share
+			:key-exchange key-bytes
 			:named-group group)))
     (make-instance 'server-hello-key-share
 		   :key key-share
 		   :size (key-share-size key-share)
+		   :extension-type +key-share+)))
+
+(defun make-client-keyshare (group key-bytes)
+  (let ((key-share
+	 (make-instance 'key-share
+			:key-exchange key-bytes
+			:named-group group)))
+    (make-instance 'client-hello-key-share
+		   :key-shares (list key-share)
+		   :size (+ 2 (key-share-size key-share))
 		   :extension-type +key-share+)))
 
 (defun make-server-supported-versions ()

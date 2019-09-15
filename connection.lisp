@@ -17,26 +17,30 @@
    (handshake-stream :initform (ironclad:make-digesting-stream :sha384) :accessor digest-stream)
    (record-hash :initform nil)
    (shared-secret :initform nil :accessor shared-secret)
+
    (handshake-secret :initform nil :accessor handshake-secret)
-   (ssecret :initform nil :accessor server-hs-secret)
-   (server-hs-key :accessor server-hs-key)
-   (server-hs-iv :accessor server-hs-iv)
-   (csecret :accessor client-hs-secret)
-   (client-hs-key :accessor client-hs-key)
-   (client-hs-iv :accessor client-hs-iv)
+
+   (my-secret :initform nil :accessor my-handshake-secret)
+   (my-hs-key :accessor my-handshake-key)
+   (my-hs-iv :accessor my-handshake-iv)
+
+   (peer-hs-secret :accessor peer-handshake-secret)
+   (peer-hs-key :accessor peer-handshake-key)
+   (peer-hs-iv :accessor peer-handshake-iv)
 
    (cipher :accessor cipher)
    (hash :accessor hash)
    (key-exchange-mode :accessor key-exchange-mode)
 
    (master-secret :initform nil :accessor master-secret)
-   (server-app-secret :accessor server-app-secret)
-   (server-app-key :accessor server-app-key)
-   (server-app-iv :accessor server-app-iv)
 
-   (client-app-secret :accessor client-app-secret)
-   (client-app-key :accessor client-app-key)
-   (client-app-iv :accessor client-app-iv)
+   (my-app-secret :accessor my-app-secret)
+   (my-app-key :accessor my-app-key)
+   (my-app-iv :accessor my-app-iv)
+
+   (peer-app-secret :accessor peer-app-secret)
+   (peer-app-key :accessor peer-app-key)
+   (peer-app-iv :accessor peer-app-iv)
 
    (mode :accessor tls-mode)
 
@@ -92,8 +96,8 @@
   (let* ((total-size (1+ (length data)))
 	 (aead-data (gen-aead-data total-size))
 	 (aead (make-aead-aes256-gcm
-		(server-app-key tls)
-		(server-app-iv tls)
+		(my-app-key tls)
+		(my-app-iv tls)
 		(get-out-nonce! tls))))
     (values
      (ironclad:encrypt-message
