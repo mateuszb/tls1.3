@@ -7,6 +7,7 @@
 (defconstant +RECORD-APPLICATION-DATA+ 23)
 (defconstant +RECORD-HEARTBEAT+ 24)
 
+;; extensions
 (defconstant +server-name+ 0)
 (defconstant +max-fragment-length+ 1)
 (defconstant +status-request+ 5)
