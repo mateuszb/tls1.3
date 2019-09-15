@@ -55,7 +55,7 @@
 (defun make-empty-array (&optional (size 0))
   (make-array size :element-type '(unsigned-byte 8) :initial-element 0))
 
-(defun get-hkdf-label-as-bytes (hash label ctx len)
+(defun get-hkdf-label-as-bytes (label ctx len)
   (flexi-streams:with-output-to-sequence (out :element-type '(unsigned-byte 8))
     (let ((hkdf (make-instance 'hkdf-label
 			       :len len
@@ -69,10 +69,11 @@
 	  (make-array (+ 2 1 1 6 (length label) (length ctx))
 		      :element-type '(unsigned-byte 8)
 		      :initial-contents
-		      (get-hkdf-label-as-bytes hash label ctx len))))
+		      (get-hkdf-label-as-bytes label ctx len))))
     (hkdf-expand secret hkdf-bytes len :hash hash)))
 
-(defun handshake-key-schedule (shared-secret hello-hash &key (hash :sha384) (cipher :aes256))
+(defun handshake-key-schedule (shared-secret hello-hash
+			       &key (hash :sha384) (cipher :aes256))
   (let* ((early-secret (make-early-secret hash))
 	 (derived-secret (make-hs-derived-secret early-secret :hash hash))
 	 (hs-secret (make-hs-secret derived-secret shared-secret :hash hash))
@@ -131,36 +132,48 @@
     (make-array 0 :element-type '(unsigned-byte 8)))))
 
 (defun make-hs-derived-secret (early-secret &key (hash :sha384))
-  (format t "derived secret from early hash=~a~%" (ironclad:byte-array-to-hex-string early-secret))
-  (hkdf-expand-label early-secret "derived" (empty-digest hash) (hash-len hash) :hash hash))
+  (hkdf-expand-label
+   early-secret
+   "derived"
+   (empty-digest hash)
+   (hash-len hash) :hash hash))
 
 (defun make-hs-secret (derived-secret shared-secret &key (hash :sha384))
-  (hkdf-extract derived-secret shared-secret :hash hash))
+  (hkdf-extract
+   derived-secret shared-secret :hash hash))
 
 (defun make-hs-traffic-secret (secret ctxhash server-p &key (hash :sha384))
   (let ((label (if server-p "s hs traffic" "c hs traffic")))
-    (hkdf-expand-label secret label ctxhash (hash-len hash) :hash hash)))
+    (hkdf-expand-label
+     secret label ctxhash (hash-len hash) :hash hash)))
 
 (defun make-hs-key (secret &key (hash :sha384) (cipher :aes256))
-  (hkdf-expand-label secret "key" (make-empty-array) (key-len cipher) :hash hash))
+  (hkdf-expand-label
+   secret "key" (make-empty-array) (key-len cipher) :hash hash))
 
 (defun make-hs-iv (secret &key (hash :sha384))
-  (hkdf-expand-label secret "iv" (make-empty-array) 12 :hash hash))
+  (hkdf-expand-label
+   secret "iv" (make-empty-array) 12 :hash hash))
 
 (defun make-app-derived-secret (handshake-secret &optional &key (hash :sha384))
   (let ((empty-array (make-empty-array (hash-len hash)))
 	(n (hash-len hash)))
-    (hkdf-expand-label handshake-secret "derived" empty-array n :hash hash)))
+    (hkdf-expand-label
+     handshake-secret "derived" empty-array n :hash hash)))
 
 (defun make-master-secret (derived-secret &optional &key (hash :sha384))
-  (hkdf-extract derived-secret (make-zero-key hash) :hash hash))
+  (hkdf-extract
+   derived-secret (make-zero-key hash) :hash hash))
 
 (defun make-app-traffic-secret (master-secret ctxhash server-p &key (hash :sha384))
   (let ((tls-label (if server-p "s ap traffic" "c ap traffic")))
-    (hkdf-expand-label master-secret tls-label ctxhash (hash-len hash) :hash hash)))
+    (hkdf-expand-label
+     master-secret tls-label ctxhash (hash-len hash) :hash hash)))
 
 (defun make-app-traffic-key (secret &key (hash :sha384) (cipher :aes256))
-  (hkdf-expand-label secret "key" (make-empty-array) (key-len cipher) :hash hash))
+  (hkdf-expand-label
+   secret "key" (make-empty-array) (key-len cipher) :hash hash))
 
 (defun make-app-iv (secret &key (hash :sha384))
-  (hkdf-expand-label secret "iv" (make-empty-array) 12 :hash hash))
+  (hkdf-expand-label
+   secret "iv" (make-empty-array) 12 :hash hash))
