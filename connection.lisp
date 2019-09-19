@@ -14,7 +14,9 @@
    (pubkey :initform nil :accessor public-key)
    (seckey :initform nil :accessor private-key)
    (peer-pubkey :initform nil :accessor peer-key)
-   (handshake-stream :initform (ironclad:make-digesting-stream :sha384) :accessor digest-stream)
+   (handshake-stream :initform
+		     (ironclad:make-digesting-stream :sha384)
+		     :accessor digest-stream)
    (record-hash :initform nil)
    (shared-secret :initform nil :accessor shared-secret)
 
@@ -64,12 +66,19 @@
    (data :accessor data :initarg :data)))
 
 (defclass tls12-connection (tls-connection)
-  ())
+  ((protocol :initform +TLS-1.2+ :accessor protocol)))
 
 (defclass tls13-connection (tls-connection)
-  ())
+  ((protocol :initform +TLS-1.3+ :accessor protocol)))
 
-(defun make-tls-connection (socket state data accept-fn read-fn write-fn alert-fn disconnect-fn)
+(defun make-tls-connection (socket
+			    state
+			    data
+			    accept-fn
+			    read-fn
+			    write-fn
+			    alert-fn
+			    disconnect-fn)
   (make-instance 'tls-connection
 		 :socket socket :state state
 		 :data data

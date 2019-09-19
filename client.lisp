@@ -87,7 +87,8 @@
   (declare (ignore event))
   (let* ((sd (context-socket ctx))
 	 (nbytes (socket:get-rxbytes sd))
-	 (*mode* :CLIENT))
+	 (*mode* :SERVER)
+	 (*version*))
     (let ((tls (context-data ctx)))
       (handler-case
        (with-slots (rx rxbuf) tls
@@ -130,8 +131,7 @@
 
 		   ;; transfer the record bytes from the RX stream into
 		   ;; TLS-RX de-encapsulating from the record layer
-		   (let ((*mode* :SERVER))
-		     (transfer-rx-record tls hdr)))
+		   (transfer-rx-record tls hdr))
 
 		  ;; if not enough data present, we need to wait for
 		  ;; another read event to continue filling the record
@@ -145,11 +145,36 @@
 	 (loop
 	    for hdr in (tls-records tls)
 	    do
-	      (format t "type=~a, version=~2,'0x, len=~a~%"
-		      (content-type hdr)
-		      (protocol-version hdr)
-		      (size hdr))
-	      (client-process-record tls)
+	      (format t "record size: ~a~%" (size hdr))
+	      (let ((rectyp (get-record-content-type hdr))
+		    (msg nil))
+		(when (eq (type-of tls) 'tls-connection)
+		  (setf msg (read-value rectyp (tls-rx-stream tls)))
+		  (let* ((ver (get-version msg)))
+		    (cond
+		      ((= ver +TLS-1.2+)
+		       (change-class tls 'tls12-connection)
+		       (setf *version* +TLS-1.2+))
+		      ((= ver +TLS-1.3+)
+		       (change-class tls 'tls13-connection)
+		       (setf *version* +TLS-1.3+))
+		      (t (on-write (socket tls) #'send-protocol-alert tls)
+			 (del-read (socket tls))
+			 (return-from tls-client-rx)))))
+
+		(cond
+		  ((eq rectyp 'application-data)
+		   (format t "encrypted packet~%")
+		   (let ((msg (decrypt-record tls hdr)))
+		     (client-process-record tls msg)))
+		  (t
+		   (cond
+		     ((not (null msg)) (client-process-record tls msg))
+		     (t
+		      (format t "will read ~a packet~%" rectyp)
+		      (let ((msg (read-value rectyp (tls-rx-stream tls))))
+			(format t "unencrypted packet~%")
+			(client-process-record tls msg)))))))
 	      (pop (tls-records tls))
 
 	    ;; are we done with the current record?
@@ -199,103 +224,114 @@
     (reset-nonces! tls)
     (setf (state tls) :NEGOTIATED)))
 
-(defun client-process-record (tls)
-  (with-slots (tlsrx state records) tls
-    (let* ((hdr (first records))
-	   (content-type (get-record-content-type hdr)))
-      (format t "content type = ~a~%" content-type)
-      (case state
-	(:SERVER-HELLO
-	 (let ((server-hello (let ((*mode* :SERVER))
-			       (read-value content-type tlsrx))))
+(defgeneric client-process-record (tls msg))
 
-	   (when (/= (get-version server-hello) +TLS-1.3+)
-	     (on-write (socket tls) #'send-protocol-alert tls)
-	     (del-read (socket tls))
-	     (error "wrong protocol version"))
+(defmethod client-process-record ((tls tls12-connection) msg)
+  (format t "tls 1.2 handler ~a~%" (type-of tls))
+  (etypecase msg
+    (server-hello
+     ;; TODO
+     (format t "server hello~%"))
 
-	   ;; find the key share extension
-	   (loop for ext in (extensions server-hello)
-	      when (typep ext 'server-hello-key-share)
-	      do
-		(let ((keyshare (key ext)))
-		  (setf (peer-key tls)
-			(ironclad:make-public-key
-			 :curve25519 :y (key-exchange keyshare)))
+    (alert
+     (format t "alert arrived: ~a:~a~%"
+	     (level msg) (description msg)))
 
-		;; diffie-hellman key exchange
-		(setf (shared-secret tls)
-		      (compute-dh-shared-secret tls))))
+    (change-cipher-spec
+     (format t "cipher: ~a~%" (cipher msg)))
 
-	   ;; update the handshake digest stream
-	   (write-value (type-of server-hello) (digest-stream tls) server-hello)
+    (certificate
+     ;; TODO
+     (format t "certificate~%"))
 
-	   ;; compute handshake keys so we can proceed decoding packets
-	   (multiple-value-bind (hs-secret ss skey siv cs ckey civ)
-	       (handshake-key-schedule
-		(shared-secret tls)
-		(ironclad:produce-digest (digest-stream tls))
-		:hash :sha384 :cipher :aes256)
-	     (setf (handshake-secret tls) hs-secret
-		   (peer-handshake-secret tls) ss
-		   (peer-handshake-key tls) skey
-		   (peer-handshake-iv tls) siv
-		   (my-handshake-secret tls) cs
-		   (my-handshake-key tls) ckey
-		   (my-handshake-iv tls) civ))
-	   (setf (state tls) :SERVER-FINISHED)))
+    (server-key-exchange-ecdh
+     (format t "server key exchange ecdh?~%")
+     ;; TODO calculate keys
+     )
 
-	(:SERVER-FINISHED
-	 (cond
-	   ((= (content-type hdr) +RECORD-CHANGE-CIPHER-SPEC+)
-	    ;; TODO: do we need to do anything with this message?
-	    (read-value content-type tlsrx))
+    (server-hello-done
+     (format t "server-hello-done~%"))
 
-	   ((= (content-type hdr) +RECORD-APPLICATION-DATA+)
-	    (let ((record (decrypt-record tls hdr)))
-	      (format t "record type=~a~%" (type-of record))
-	      (etypecase record
-		(alert
-		 (format t "alert arrived: ~a:~a~%"
-			 (level record) (description record)))
+    (t
+     #+off(when (plusp (stream-size (rx-data-stream tls)))
+       (when (read-fn tls)
+	 (funcall (read-fn tls)
+		  (data tls)
+		  (stream-size (rx-data-stream tls))))))))
 
-		(change-cipher-spec
-		 (format t "ignoring cipher change packet~%"))
+(defmethod client-process-record ((tls tls13-connection) msg)
+  (etypecase msg
+    (server-hello
+     ;; find the key share extension in the hello msg
+     (loop for ext in (extensions msg)
+	when (typep ext 'server-hello-key-share)
+	do
+	  (let ((keyshare (key ext)))
+	    (setf (peer-key tls)
+		  (ironclad:make-public-key
+		   :curve25519 :y (key-exchange keyshare)))
 
-		(encrypted-extensions
-		 (write-value 'encrypted-extensions (digest-stream tls) record))
+	    ;; diffie-hellman key exchange
+	    (setf (shared-secret tls)
+		  (compute-dh-shared-secret tls))))
 
-		(certificate
-		 (write-value 'certificate (digest-stream tls) record))
+     ;; update the handshake digest stream
+     (write-value (type-of msg) (digest-stream tls) msg)
+     ;; compute handshake keys so we can proceed decoding packets
+     (multiple-value-bind (hs-secret ss skey siv cs ckey civ)
+	 (handshake-key-schedule
+	  (shared-secret tls)
+	  (ironclad:produce-digest (digest-stream tls))
+	  :hash :sha384 :cipher :aes256)
+       (setf (handshake-secret tls) hs-secret
+	     (peer-handshake-secret tls) ss
+	     (peer-handshake-key tls) skey
+	     (peer-handshake-iv tls) siv
+	     (my-handshake-secret tls) cs
+	     (my-handshake-key tls) ckey
+	     (my-handshake-iv tls) civ))
+     (setf (state tls) :SERVER-FINISHED))
 
-		(certificate-verify
-		 (write-value 'certificate-verify (digest-stream tls) record))
+    (alert
+     (format t "alert arrived: ~a:~a~%"
+	     (level msg) (description msg)))
 
-		(finished
-		 (write-value 'finished (digest-stream tls) record)
+    (change-cipher-spec
+     (format t "cipher: ~a~%" (cipher msg)))
 
-		 ;; create and send client finished message
-		 (send-client-finished-msg tls (make-client-finished-msg tls))
+    (encrypted-extensions
+     (write-value 'encrypted-extensions (digest-stream tls) msg))
 
-		 ;; switch the keys
-		 (multiple-value-bind (ss sk siv cs ck civ)
-		     (application-key-schedule
-		      (handshake-secret tls)
-		      (ironclad:produce-digest (digest-stream tls)))
-		   (setf (peer-app-secret tls) ss
-			 (peer-app-key tls) sk
-			 (peer-app-iv tls) siv
-			 (my-app-secret tls) cs
-			 (my-app-key tls) ck
-			 (my-app-iv tls) civ))))))))
+    (certificate
+     (write-value 'certificate (digest-stream tls) msg))
 
-	(:NEGOTIATED
-	 (decrypt-record tls (first (tls-records tls)))
+    (certificate-verify
+     (write-value 'certificate-verify (digest-stream tls) msg))
 
-	 (when (plusp (stream-size (rx-data-stream tls)))
-	   (funcall (read-fn tls)
-		    (data tls)
-		    (stream-size (rx-data-stream tls)))))))))
+    (finished
+     (write-value 'finished (digest-stream tls) msg)
+
+     ;; create and send client finished message
+     (send-client-finished-msg tls (make-client-finished-msg tls))
+
+     ;; switch the keys
+     (multiple-value-bind (ss sk siv cs ck civ)
+	 (application-key-schedule
+	  (handshake-secret tls)
+	  (ironclad:produce-digest (digest-stream tls)))
+       (setf (peer-app-secret tls) ss
+	     (peer-app-key tls) sk
+	     (peer-app-iv tls) siv
+	     (my-app-secret tls) cs
+	     (my-app-key tls) ck
+	     (my-app-iv tls) civ)))
+
+    (t
+     (when (plusp (stream-size (rx-data-stream tls)))
+       (when (read-fn tls)
+	 (funcall (read-fn tls)
+		  (data tls)
+		  (stream-size (rx-data-stream tls))))))))
 
 (defun send-client-hello (tls)
   (let ((hello (make-instance 'client-hello)))
@@ -324,10 +360,12 @@
 					:size 2
 					:extension-type +ec-point-formats+)
 			 (make-instance 'signature-schemes
-					:size (+ 2 (* 1 2))
+					:size (+ 2 (* 2 2))
 					:extension-type +signature-algorithms+
 					:signature-schemes
-					(list +rsa-pss-rsae-sha384+))
+					(list
+					 +rsa-pss-rsae-sha384+
+					 +rsa-pkcs1-sha384+))
 			 (make-client-keyshare
 			  +x25519+
 			  (ironclad:curve25519-key-y (public-key tls)))))
@@ -351,13 +389,16 @@
       (on-read (socket tls) #'tls-client-rx))))
 
 (defun get-version (hello)
-  (loop for ext in (extensions hello)
-     when (= (extension-type ext) +supported-versions+)
-     do
-       (etypecase hello
-	 (server-hello
-	  (return-from get-version (version ext)))
-	 (client-hello
-	  (when (find +TLS-1.3+ (versions ext))
-	    (return-from get-version +TLS-1.3+)))))
-  (protocol-version hello))
+  (format t "get version from ~a packet~%" (type-of hello))
+  (when (or (typep hello 'server-hello)
+	    (typep hello 'client-hello))
+    (loop for ext in (extensions hello)
+       when (= (extension-type ext) +supported-versions+)
+       do
+	 (etypecase hello
+	   (server-hello
+	    (return-from get-version (version ext)))
+	   (client-hello
+	    (when (find +TLS-1.3+ (versions ext))
+	      (return-from get-version +TLS-1.3+)))))
+    (protocol-version hello)))
