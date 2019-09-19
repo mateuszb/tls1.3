@@ -1,6 +1,7 @@
 (in-package :tls)
 
 (defvar *mode*)
+(defvar *version*)
 
 (define-binary-class tls-record ()
   ((content-type u8 :initform +RECORD-INVALID+)
@@ -82,15 +83,28 @@
   ((handshake-type u8 :initform 0)
    (size u24 :initform 0))
   (:dispatch
-   (find-handshake-class handshake-type)))
+   (find-handshake-class handshake-type *version*)))
 
-(defun find-handshake-class (handshake-type)
+(defgeneric find-handshake-class (handshake-type protocol-version))
+(defmethod find-handshake-class (handshake-type protocol-version)
   (ecase handshake-type
     (1 'client-hello)
     (2 'server-hello)
     (4 'new-session-ticket)
     (8 'encrypted-extensions)
-    (11 'certificate)
+    (11 'tls12-certificate)
+    (15 'certificate-verify)
+    (20 'finished)))
+
+(defmethod find-handshake-class (handshake-type (protocol-version (eql +TLS-1.2+)))
+  (ecase handshake-type
+    (1 'client-hello)
+    (2 'server-hello)
+    (4 'new-session-ticket)
+    (8 'encrypted-extensions)
+    (11 'tls12-certificate)
+    (12 'server-key-exchange-ecdh)
+    (14 'server-hello-done)
     (15 'certificate-verify)
     (20 'finished)))
 
@@ -279,7 +293,9 @@
 
 (defun make-server-certificate (bytes)
   (let ((certbytes bytes))
-    (let ((certs (list (make-instance 'certificate-entry :certdata certbytes :extensions '()))))
+    (let ((certs (list (make-instance 'certificate-entry
+				      :certdata certbytes
+				      :extensions '()))))
       (make-instance
        'certificate
        :handshake-type +CERTIFICATE+
@@ -339,3 +355,82 @@
     (tls-list :size-type 'u16
 	      :element-type 'tls-extension
 	      :element-size #'tls-extension-size))))
+
+
+;; TLS 1.2 ECC related classes
+(define-binary-class ec-curve ()
+  ((a (tls-list :size-type 'u8
+		:element-type 'u8
+		:element-size 1))
+   (b (tls-list :size-type 'u8
+		:element-type 'u8
+		:element-size 1))))
+
+(define-binary-class ec-point ()
+  ((point (tls-list :size-type 'u8
+		    :element-type 'u8
+		    :element-size 1))))
+
+(define-tagged-binary-class ec-parameters ()
+  ((curve-type u8))
+  (:dispatch
+   (find-ec-curve-type curve-type)))
+
+(defun find-ec-curve-type (curve-type)
+  (format t "curve type = ~a~%" curve-type)
+  (case curve-type
+    (1 'ec-explicit-prime)
+    (2 'ec-explicit-char2)
+    (3 'ec-named-curve-parameters)))
+
+(define-binary-class ec-explicit-prime (ec-parameters)
+  ((prime-p (tls-list :element-type 'u8 :size-type 'u8 :element-size 1))
+   (curve ec-curve)
+   (base ec-point)
+   (order (tls-list :element-type 'u8 :size-type 'u8 :element-size 1))
+   (cofactor (tls-list :element-type 'u8 :size-type 'u8 :element-size 1))))
+
+(define-tagged-binary-class ec-basis ()
+  ((basis-type u8))
+  (:dispatch
+   (find-ec-basis-type basis-type)))
+
+(defun find-ec-basis-type (basis-type)
+  (cond
+    ((= basis-type +ec-basis-trinomial+) 'ec-basis-trinomial)
+    ((= basis-type +ec-basis-pentanomial+) 'ec-basis-pentanomial)))
+
+(define-binary-class ec-basis-trinomial (ec-basis)
+  ((k (tls-list :size-type 'u8 :element-size 1 :element-type 'u8))))
+
+(define-binary-class ec-basis-pentanomial (ec-basis)
+  ((k1 (tls-list :size-type 'u8 :element-size 1 :element-type 'u8))
+   (k2 (tls-list :size-type 'u8 :element-size 1 :element-type 'u8))
+   (k3 (tls-list :size-type 'u8 :element-size 1 :element-type 'u8))))
+
+(define-binary-class ec-explicit-char2 (ec-parameters)
+  ((m u16)
+   (basis ec-basis)
+   (curve ec-curve)
+   (base ec-base)
+   (order (tls-list :element-type 'u8 :size-type 'u8 :element-size 1))
+   (cofactor (tls-list :element-type 'u8 :size-type 'u8 :element-size 1))))
+
+(define-binary-class ec-named-curve-parameters (ec-parameters)
+  ((named-curve u16)))
+
+(define-binary-class server-ec-parameters ()
+  ((params ec-parameters)
+   (point ec-point)))
+
+(define-binary-class server-key-exchange-ecdh (handshake)
+  ((params server-ec-parameters)
+   (signature (raw-bytes :size 260))))
+
+(define-binary-class tls12-certificate (handshake)
+  ((certificates (tls-list :size-type 'u24
+			   :element-type 'u8
+			   :element-size 1))))
+
+(define-binary-class server-hello-done (handshake)
+  ())
