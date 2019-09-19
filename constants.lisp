@@ -135,3 +135,11 @@
 (defconstant +unknown-psk-identity+ 115)
 (defconstant +certificate-required+ 116)
 (defconstant +no-application-protocol+ 120)
+
+;; TLS 1.2 ECC related constants
+(defconstant +explicit-prime+ 1)
+(defconstant +explicit-char2+ 2)
+(defconstant +named-curve+ 3)
+
+(defconstant +ec-basis-trinomial+ 0)
+(defconstant +ec-basis-pentanomial+ 1)
