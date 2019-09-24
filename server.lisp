@@ -151,7 +151,7 @@
 	 (tls (context-data ctx)))
     (send-alert tls +ALERT-WARNING+ +CLOSE-NOTIFY+)
     (tls-tx ctx evt)
-    (rem-socket sd)
+    (rem-handle sd)
     (disconnect sd)))
 
 (defun send-protocol-alert (ctx evt)
@@ -160,7 +160,7 @@
 	 (tls (context-data ctx)))
     (send-alert tls +ALERT-FATAL+ +PROTOCOL-VERSION+)
     (tls-tx ctx evt)
-    (rem-socket sd)
+    (rem-handle sd)
     (disconnect sd)))
 
 (defun send-insufficient-security-alert (ctx evt)
@@ -169,7 +169,7 @@
 	 (tls (context-data ctx)))
     (send-alert tls +ALERT-FATAL+ +INSUFFICIENT-SECURITY+)
     (tls-tx ctx evt)
-    (rem-socket sd)
+    (rem-handle sd)
     (disconnect sd)))
 
 (defun tls-disconnect (ctx event)
@@ -179,7 +179,7 @@
 	 (nbytes (socket:get-rxbytes sd))
 	 (*mode* :SERVER))
     (let ((tls (context-data ctx)))
-      (rem-socket sd)
+      (rem-handle sd)
       (format t "disconnecting in tls-disconnect~%")
       (disconnect sd))))
 
@@ -636,7 +636,6 @@
 
 	       (application-data
 		;; write the application data to the decrypted RX stream
-		(format t "plaintext: ~a~%" plaintext)
 		(write-sequence
 		 plaintext
 		 (rx-data-stream tls)
