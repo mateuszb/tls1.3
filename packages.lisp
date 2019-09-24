@@ -25,15 +25,15 @@
 		:disconnect
 		:get-host-addr)
 
-  (:import-from :reactor.dispatch
+  (:import-from :reactor
 		:del-write
 		:del-read
-		:rem-socket
+		:rem-handle
 		:on-read
 		:on-write
 		:on-disconnect
 		:context-data
-		:context-socket
+		:context-handle
 		:wait-for-events
 		:dispatch-events
 		:with-dispatcher
@@ -41,13 +41,12 @@
 		:close-dispatcher
 		:dispatcher-reactor
 		:socket-context
-		:make-context)
+		:make-context
+		:reactor-handle
+		:handle-key)
 
   (:import-from :flexi-streams
 		:with-input-from-sequence)
-
-  (:import-from :reactor
-		:reactor-handle)
 
   (:import-from :cl-speedy-queue
 		:make-queue

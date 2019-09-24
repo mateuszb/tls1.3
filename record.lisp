@@ -89,6 +89,12 @@
 (defmethod find-handshake-class (handshake-type protocol-version)
   (ecase handshake-type
     (1 'client-hello)
+    (2 'server-hello)))
+
+(defmethod find-handshake-class
+    (handshake-type (protocol-version (eql +TLS-1.3+)))
+  (ecase handshake-type
+    (1 'client-hello)
     (2 'server-hello)
     (4 'new-session-ticket)
     (8 'encrypted-extensions)
@@ -106,6 +112,7 @@
     (12 'server-key-exchange-ecdh)
     (14 'server-hello-done)
     (15 'certificate-verify)
+    (16 'client-key-exchange)
     (20 'finished)))
 
 (define-binary-class generic-handshake (handshake)
@@ -434,3 +441,12 @@
 
 (define-binary-class server-hello-done (handshake)
   ())
+
+(define-binary-class client-key-exchange (handshake)
+  ((pubkey (tls-list :size-type 'u8 :element-type 'u8 :element-size 1))))
+
+(defun make-client-key-exchange (pubkey)
+  (make-instance 'client-key-exchange
+		 :pubkey pubkey
+		 :size (+ 1 (length pubkey))
+		 :handshake-type +CLIENT-KEY-EXCHANGE+))

@@ -14,35 +14,16 @@
    (pubkey :initform nil :accessor public-key)
    (seckey :initform nil :accessor private-key)
    (peer-pubkey :initform nil :accessor peer-key)
-   (handshake-stream :initform
-		     (ironclad:make-digesting-stream :sha384)
-		     :accessor digest-stream)
-   (record-hash :initform nil)
-   (shared-secret :initform nil :accessor shared-secret)
-
-   (handshake-secret :initform nil :accessor handshake-secret)
-
-   (my-secret :initform nil :accessor my-handshake-secret)
-   (my-hs-key :accessor my-handshake-key)
-   (my-hs-iv :accessor my-handshake-iv)
-
-   (peer-hs-secret :accessor peer-handshake-secret)
-   (peer-hs-key :accessor peer-handshake-key)
-   (peer-hs-iv :accessor peer-handshake-iv)
 
    (cipher :accessor cipher)
    (hash :accessor hash)
    (key-exchange-mode :accessor key-exchange-mode)
 
-   (master-secret :initform nil :accessor master-secret)
-
-   (my-app-secret :accessor my-app-secret)
-   (my-app-key :accessor my-app-key)
-   (my-app-iv :accessor my-app-iv)
-
-   (peer-app-secret :accessor peer-app-secret)
-   (peer-app-key :accessor peer-app-key)
-   (peer-app-iv :accessor peer-app-iv)
+   (handshake-stream :initform
+		     (ironclad:make-digesting-stream :sha384)
+		     :accessor digest-stream)
+   (record-hash :initform nil)
+   (shared-secret :initform nil :accessor shared-secret)
 
    (mode :accessor tls-mode)
 
@@ -63,13 +44,41 @@
    (tx-queue :initform (make-queue 512) :reader tx-queue)
 
    ;; user data
-   (data :accessor data :initarg :data)))
+   (data :accessor data :initarg :data)
+
+   (client-random :accessor client-random)
+   (server-random :accessor server-random)))
 
 (defclass tls12-connection (tls-connection)
-  ((protocol :initform +TLS-1.2+ :accessor protocol)))
+  ((protocol :initform +TLS-1.2+ :accessor protocol)
+   (my-mac-key :initform nil :accessor my-mac-key)
+   (my-key :initform nil :accessor my-key)
+   (my-iv :initform nil :accessor my-iv)
+   (peer-mac-key :initform nil :accessor peer-mac-key)
+   (peer-key :initform nil :accessor peer-key)
+   (peer-iv :initform nil :accessor peer-iv)))
 
 (defclass tls13-connection (tls-connection)
-  ((protocol :initform +TLS-1.3+ :accessor protocol)))
+  ((protocol :initform +TLS-1.3+ :accessor protocol)
+   (handshake-secret :initform nil :accessor handshake-secret)
+
+   (my-secret :initform nil :accessor my-handshake-secret)
+   (my-hs-key :accessor my-handshake-key)
+   (my-hs-iv :accessor my-handshake-iv)
+
+   (peer-hs-secret :accessor peer-handshake-secret)
+   (peer-hs-key :accessor peer-handshake-key)
+   (peer-hs-iv :accessor peer-handshake-iv)
+
+   (master-secret :initform nil :accessor master-secret)
+
+   (my-app-secret :accessor my-app-secret)
+   (my-app-key :accessor my-app-key)
+   (my-app-iv :accessor my-app-iv)
+
+   (peer-app-secret :accessor peer-app-secret)
+   (peer-app-key :accessor peer-app-key)
+   (peer-app-iv :accessor peer-app-iv)))
 
 (defun make-tls-connection (socket
 			    state
@@ -79,7 +88,7 @@
 			    write-fn
 			    alert-fn
 			    disconnect-fn)
-  (make-instance 'tls-connection
+  (make-instance 'tls13-connection
 		 :socket socket :state state
 		 :data data
 		 :accept-fn accept-fn

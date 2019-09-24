@@ -83,7 +83,6 @@
 	 (csecret (make-hs-traffic-secret hs-secret hello-hash nil :hash hash))
 	 (client-key (make-hs-key csecret :cipher cipher))
 	 (client-iv (make-hs-iv csecret :hash hash)))
-    #+debug
     (progn
       (format t "shared secret=~a~%" (ironclad:byte-array-to-hex-string shared-secret))
       (format t "early secret=~a~%" (ironclad:byte-array-to-hex-string early-secret))

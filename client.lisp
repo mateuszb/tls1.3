@@ -195,7 +195,8 @@
 	  (del-read (socket tls))
 	  (on-write (socket tls) #'send-insufficient-security-alert))))))
 
-(defun make-client-finished-msg (tls)
+(defgeneric make-client-finished-msg (tls))
+(defmethod make-client-finished-msg ((tls tls13-connection))
   (let* ((finished-key (make-finished-key (my-handshake-secret tls) :sha384))
 	 (finished-hash (ironclad:produce-digest (digest-stream tls)))
 	 (finished-data (ironclad:produce-mac
@@ -208,7 +209,14 @@
      :handshake-type +FINISHED+
      :data finished-data)))
 
-(defun send-client-finished-msg (tls finished-msg)
+(defmethod make-client-finished-msg ((tls tls12-connection))
+  (make-instance
+   'finished
+   :size (hash-len :sha384)
+   :handshake-type +FINISHED+
+   :data (make-array (hash-len :sha384) :element-type '(unsigned-byte 8) :initial-element 0)))
+
+(defmethod send-client-finished-msg ((tls tls13-connection) finished-msg)
   (let* ((aead (make-aead-aes256-gcm (my-handshake-key tls)
 				     (my-handshake-iv tls)
 				     (get-out-nonce! tls)))
@@ -224,33 +232,105 @@
     (reset-nonces! tls)
     (setf (state tls) :NEGOTIATED)))
 
+(defmethod send-client-finished-msg ((tls tls12-connection) finished-msg)
+  (let* ((nonce (get-out-nonce! tls))
+	 (key (my-key tls))
+	 (iv (my-iv tls))
+	 (aead (make-aead-aes256-gcm key iv nonce)))
+    (labels ((write-to-seq (msg)
+	       (alien-ring::with-output-to-byte-sequence (out (size finished-msg))
+		 (write-value (type-of msg) out msg))))
+      (let* ((ciphertext (ironclad:encrypt-message aead (write-to-seq finished-msg)))
+	     (rec (make-instance 'tls-record :size (+ 16 (length ciphertext))
+				:content-type +RECORD-APPLICATION-DATA+)))
+	(write-value 'tls-record (tx-stream tls) rec)
+	(write-value 'raw-bytes (tx-stream tls) nonce :size (length nonce))
+	(write-sequence ciphertext (tx-stream tls))))
+
+    (on-write (socket tls) #'tls-tx)
+    (setf (state tls) :NEGOTIATED)))
+
+
 (defgeneric client-process-record (tls msg))
 
 (defmethod client-process-record ((tls tls12-connection) msg)
   (format t "tls 1.2 handler ~a~%" (type-of tls))
   (etypecase msg
     (server-hello
-     ;; TODO
-     (format t "server hello~%"))
+     (write-value 'server-hello (digest-stream tls) msg)
+     (setf (server-random tls) (random-bytes msg)))
 
     (alert
      (format t "alert arrived: ~a:~a~%"
 	     (level msg) (description msg)))
 
     (change-cipher-spec
-     (format t "cipher: ~a~%" (cipher msg)))
+     (write-value 'change-cipher-spec (digest-stream tls) msg))
 
-    (certificate
-     ;; TODO
-     (format t "certificate~%"))
+    (tls12-certificate
+     (write-value 'tls12-certificate (digest-stream tls) msg))
 
     (server-key-exchange-ecdh
-     (format t "server key exchange ecdh?~%")
-     ;; TODO calculate keys
-     )
+     (write-value 'server-key-exchange-ecdh (digest-stream tls) msg)
+
+     (setf (peer-key tls)
+	   (ironclad:make-public-key
+	    :curve25519 :y
+	    (make-array (length (point (point (params msg))))
+			:element-type '(unsigned-byte 8)
+			:initial-contents (point (point (params msg)))))))
 
     (server-hello-done
-     (format t "server-hello-done~%"))
+     (write-value 'server-hello-done (digest-stream tls) msg)
+
+     ;; compute tls 1.2 premaster secret
+     (setf (shared-secret tls) (compute-dh-shared-secret tls))
+
+     ;; compute keys
+     (let* ((cr (client-random tls))
+	    (sr (server-random tls))
+	    (premaster (shared-secret tls))
+	    (master (tls12-key-schedule premaster cr sr)))
+
+       (format t "master key length: ~a~%" (length master))
+       (multiple-value-bind (my-mac peer-mac my-key peer-key my-iv peer-iv)
+	   (tls12-final-key master sr cr)
+	 (setf (my-mac-key tls) my-mac
+	       (peer-mac-key tls) peer-mac
+	       (my-key tls) my-key
+	       (peer-key tls) peer-key
+	       (my-iv tls) my-iv
+	       (peer-iv tls) peer-iv)
+
+	 (format t "type of my key ~a~%" (type-of (my-key tls)))))
+
+     ;; add client key exchange message to the transmit queue
+     (generate-keys tls :curve25519)
+     (let ((kex (make-client-key-exchange
+		 (map 'list #'identity
+		      (ironclad:curve25519-key-y (public-key tls))))))
+       ;; update the digest
+       (write-value 'client-key-exchange (digest-stream tls) kex)
+
+       ;; queue up key exchange record header
+       (write-value 'tls-record (tx-stream tls)
+		    (make-instance
+		     'tls-record :size 37
+		     :content-type +RECORD-HANDSHAKE+))
+
+       ;; queue up key exchange
+       (write-value 'client-key-exchange (tx-stream tls) kex)
+
+       ;; queue up record header for change cipher spec
+       (write-value 'tls-record (tx-stream tls)
+		    (make-instance 'tls-record :size 1
+				   :content-type +RECORD-CHANGE-CIPHER-SPEC+))
+       ;; queue up change cipher spec
+       (write-value 'u8 (tx-stream tls) 1))
+
+     (send-client-finished-msg
+      tls (make-client-finished-msg tls))
+     (on-write (socket tls) #'tls-tx))
 
     (t
      #+off(when (plusp (stream-size (rx-data-stream tls)))
@@ -383,6 +463,8 @@
 				 :content-type +RECORD-HANDSHAKE+)))
       (write-value (type-of record) (tx-stream tls) record)
       (write-value (type-of hello) (tx-stream tls) hello)
+
+      (setf (client-random tls) (random-bytes hello))
 
       ;; update digest stream
       (write-value (type-of hello) (digest-stream tls) hello)

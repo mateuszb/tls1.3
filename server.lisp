@@ -9,9 +9,14 @@
 (defvar *cert-path*)
 (defvar *key-path*)
 
-(defun start-server (cert-path key-path port accept-fn read-fn write-fn alert-fn disconnect-fn)
+(defmethod handle-key ((s socket:socket))
+  (socket::socket-fd s))
+
+(defun start-server
+    (cert-path key-path port accept-fn read-fn write-fn alert-fn disconnect-fn)
   (let ((dispatcher (make-dispatcher))
-	(*connections* (make-hash-table)))
+	(*connections* (make-hash-table))
+	(*version* +TLS-1.3+))
     (let ((*acceptor* accept-fn)
 	  (*reader* read-fn)
 	  (*writer* write-fn)
@@ -41,11 +46,11 @@
 
 (defun accept-tls-connection (ctx event)
   (declare (ignore event))
-  (let ((socket (context-socket ctx)))
+  (let ((socket (context-handle ctx)))
     (tagbody
      again
        (handler-case
-	   (let ((new-socket (socket::accept socket)))
+	   (let ((new-socket (socket:accept socket)))
 	     (let ((newctx (make-new-context new-socket)))
 	       (when (accept-fn newctx)
 		 (let ((newdata (funcall (accept-fn newctx) newctx)))
@@ -83,7 +88,7 @@
 
 (defun tls-tx (ctx event)
   (declare (ignorable ctx event))
-  (let* ((sd (context-socket ctx))
+  (let* ((sd (context-handle ctx))
 	 (tls (context-data ctx)))
     (with-slots (tx) tls
       ;; call the tx handler ? see if the application has anything to send?
@@ -95,7 +100,9 @@
 	   (format t "ring buffer has ~a bytes to xfer~%" (stream-size tx))
 	   (handler-case
 	       (progn
-		 (tx-from-buffer sd (stream-buffer tx) (stream-size tx))
+		 (let ((nsent (tx-from-buffer
+			       sd (stream-buffer tx) (stream-size tx))))
+		   (format t "sent ~a immediate bytes~%" nsent))
 
 		 (when (plusp (queue-count (tx-queue tls)))
 		  (let ((min-xfer (+ 1 5 16))
@@ -127,9 +134,11 @@
 			      (dequeue (tx-queue tls))))))))))
 
 	     (operation-would-block ()
+	       (format t "operation would block~%")
 	       (loop-finish))
 
-	     (operation-interrupted ())))
+	     (operation-interrupted ()
+	       (format t "operation interrupted~%"))))
 
       (when (alien-ring:ring-buffer-empty-p (stream-buffer tx))
 	;; no more data to send. disable write notifications
@@ -138,7 +147,7 @@
 
 (defun send-close-notify (ctx evt)
   (format t "sending close notify~%")
-  (let* ((sd (context-socket ctx))
+  (let* ((sd (context-handle ctx))
 	 (tls (context-data ctx)))
     (send-alert tls +ALERT-WARNING+ +CLOSE-NOTIFY+)
     (tls-tx ctx evt)
@@ -147,7 +156,7 @@
 
 (defun send-protocol-alert (ctx evt)
   (format t "sending protocol alert~%")
-  (let* ((sd (context-socket ctx))
+  (let* ((sd (context-handle ctx))
 	 (tls (context-data ctx)))
     (send-alert tls +ALERT-FATAL+ +PROTOCOL-VERSION+)
     (tls-tx ctx evt)
@@ -156,7 +165,7 @@
 
 (defun send-insufficient-security-alert (ctx evt)
   (format t "send insufficient security alert~%")
-  (let* ((sd (context-socket ctx))
+  (let* ((sd (context-handle ctx))
 	 (tls (context-data ctx)))
     (send-alert tls +ALERT-FATAL+ +INSUFFICIENT-SECURITY+)
     (tls-tx ctx evt)
@@ -166,7 +175,7 @@
 (defun tls-disconnect (ctx event)
   "Top level handler for disconnect events."
   (declare (ignore event))
-  (let* ((sd (context-socket ctx))
+  (let* ((sd (context-handle ctx))
 	 (nbytes (socket:get-rxbytes sd))
 	 (*mode* :SERVER))
     (let ((tls (context-data ctx)))
@@ -177,7 +186,7 @@
 (defun tls-rx (ctx event)
   "Top level read notification handler to plug into the reactor."
   (declare (ignore event))
-  (let* ((sd (context-socket ctx))
+  (let* ((sd (context-handle ctx))
 	 (nbytes (socket:get-rxbytes sd))
 	 (*mode* :SERVER))
     (let ((tls (context-data ctx)))
@@ -244,7 +253,7 @@
 
 	(socket-eof ()
 	  (format t "disconnecting on eof~%")
-	  (rem-socket (socket tls))
+	  (rem-handle (socket tls))
 	  (disconnect (socket tls)))
 
 	(no-common-cipher ()
@@ -615,7 +624,8 @@
 		(let ((msg))
 		  (with-input-from-sequence (in plaintext)
 		    (setf msg (read-value type in)))
-		  (format t "message: ~a~%" (type-of msg))))
+		  (format t "message: ~a~%" (type-of msg))
+		  msg))
 	       (alert
 		(let ((alert))
 		  (with-input-from-sequence (in plaintext)
