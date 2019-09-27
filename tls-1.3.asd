@@ -26,7 +26,8 @@
 					    "record"
 					    "condition"
 					    "packages"))
-	       (:file "client" :depends-on ("connection" "util"))
+	       (:file "client" :depends-on ("connection" "util" "tls12-hmac"))
+	       (:file "tls12-hmac" :depends-on ("packages"))
 	       (:file "record" :depends-on ("serialization")))
   :in-order-to ((test-op (test-op "tls-1.3/test")))
   :description "A lightweight minimal tls1.3 library that is easy to integrate.")

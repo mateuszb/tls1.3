@@ -98,7 +98,7 @@
     (2 'server-hello)
     (4 'new-session-ticket)
     (8 'encrypted-extensions)
-    (11 'tls12-certificate)
+    (11 'certificate)
     (15 'certificate-verify)
     (20 'finished)))
 

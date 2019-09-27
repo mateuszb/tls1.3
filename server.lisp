@@ -590,7 +590,9 @@
     (:SERVER-FINISHED (peer-handshake-iv tls))
     (:NEGOTIATED (peer-app-iv tls))))
 
-(defun decrypt-record (tls hdr)
+(defgeneric decrypt-record (tls hdr))
+
+(defmethod decrypt-record ((tls tls13-connection) hdr)
   (let ((ciphertext (make-array (size hdr) :element-type '(unsigned-byte 8)))
 	(assocdata
 	 (ironclad:hex-string-to-byte-array
@@ -601,14 +603,14 @@
 	   (nonce (get-in-nonce! tls))
 	   (aead (make-aead-aes256-gcm key iv nonce)))
 
-      (let* ((plaintext (make-array (- (size hdr) 16) :element-type '(unsigned-byte 8)))
-	     (plaintext2 (make-array (- (size hdr) 16) :element-type '(unsigned-byte 8))))
+      (let* ((plaintext (make-array (- (size hdr) 16) :element-type '(unsigned-byte 8))))
 	(ironclad:process-associated-data aead assocdata)
 	(multiple-value-bind (consumed produced)
 	    (ironclad:decrypt
 	     aead ciphertext plaintext
 	     :handle-final-block t
-	     :ciphertext-end (- (size hdr) 16)))
+	     :ciphertext-end (- (size hdr) 16))
+	  (declare (ignore consumed produced)))
 
 	(let* ((content-type-pos (scan-for-content-type plaintext))
 	       (type (tls-content->class (aref plaintext content-type-pos))))

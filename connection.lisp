@@ -45,6 +45,7 @@
 
    ;; user data
    (data :accessor data :initarg :data)
+   (version :accessor tls-version :initform nil :initarg :version)
 
    (client-random :accessor client-random)
    (server-random :accessor server-random)))
@@ -88,7 +89,7 @@
 			    write-fn
 			    alert-fn
 			    disconnect-fn)
-  (make-instance 'tls13-connection
+  (make-instance 'tls-connection
 		 :socket socket :state state
 		 :data data
 		 :accept-fn accept-fn
