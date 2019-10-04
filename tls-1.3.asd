@@ -26,7 +26,12 @@
 					    "record"
 					    "condition"
 					    "packages"))
-	       (:file "client" :depends-on ("connection" "util" "tls12-hmac"))
+	       (:file "client" :depends-on ("record"
+					    "connection"
+					    "util"
+					    "elliptic-curves"
+					    "tls12-hmac"))
+	       (:file "elliptic-curves" :depends-on ("packages"))
 	       (:file "tls12-hmac" :depends-on ("packages"))
 	       (:file "record" :depends-on ("serialization")))
   :in-order-to ((test-op (test-op "tls-1.3/test")))
