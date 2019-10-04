@@ -3,6 +3,7 @@
 (defvar *mode*)
 (defvar *version*)
 
+(declaim (optimize (debug 3) (speed 0)))
 (define-binary-class tls-record ()
   ((content-type u8 :initform +RECORD-INVALID+)
    (protocol-version u16 :initform +TLS-1.2+)
@@ -87,12 +88,14 @@
 
 (defgeneric find-handshake-class (handshake-type protocol-version))
 (defmethod find-handshake-class (handshake-type protocol-version)
+  (format t "TLS-? HANDSHAKE TYPE ~a~%" handshake-type)
   (ecase handshake-type
     (1 'client-hello)
     (2 'server-hello)))
 
 (defmethod find-handshake-class
     (handshake-type (protocol-version (eql +TLS-1.3+)))
+  (format t "TLS-1.3 HANDSHAKE TYPE ~a~%" handshake-type)
   (ecase handshake-type
     (1 'client-hello)
     (2 'server-hello)
@@ -103,6 +106,7 @@
     (20 'finished)))
 
 (defmethod find-handshake-class (handshake-type (protocol-version (eql +TLS-1.2+)))
+  (format t "TLS-1.2 HANDSHAKE TYPE ~a~%" handshake-type)
   (ecase handshake-type
     (1 'client-hello)
     (2 'server-hello)
@@ -430,9 +434,35 @@
   ((params ec-parameters)
    (point ec-point)))
 
+(define-tagged-binary-class digitally-signed ()
+  ((algorithm u16))
+  (:dispatch
+   (progn
+     (format t "ALGORITHM ~4,'0x~%" algorithm)
+     (cond
+       ((= algorithm +rsa-pkcs1-sha256+) 'rsa-pkcs1-sha256-signature)
+       ((= algorithm +rsa-pkcs1-sha384+) 'rsa-pkcs1-sha384-signature)
+       ((= algorithm +rsa-pkcs1-sha512+) 'rsa-pkcs1-sha512-signature)
+       ((= algorithm +rsa-pss-rsae-sha256+) 'rsa-pss-rsae-sha256-signature)
+       ((= algorithm +rsa-pss-rsae-sha384+) 'rsa-pss-rsae-sha384-signature)
+       ((= algorithm +rsa-pss-rsae-sha512+) 'rsa-pss-rsae-sha512-signature)))))
+
+(defmacro define-signature-binary-class (hash sig scheme)
+  (let ((sym (intern (format nil "~a-~a-~a-SIGNATURE" sig scheme hash))))
+    `(define-binary-class ,sym (digitally-signed)
+       ((signature (varbytes :size-type 'u16))))))
+
+(define-signature-binary-class sha256 rsa pkcs1)
+(define-signature-binary-class sha384 rsa pkcs1)
+(define-signature-binary-class sha512 rsa pkcs1)
+
+(define-signature-binary-class sha256 rsa pss-rsae)
+(define-signature-binary-class sha384 rsa pss-rsae)
+(define-signature-binary-class sha512 rsa pss-rsae)
+
 (define-binary-class server-key-exchange-ecdh (handshake)
   ((params server-ec-parameters)
-   (signature (raw-bytes :size 260))))
+   (signature digitally-signed)))
 
 (define-binary-class tls12-certificate (handshake)
   ((certificates (tls-list :size-type 'u24

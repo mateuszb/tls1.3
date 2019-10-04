@@ -15,8 +15,13 @@
    (seckey :initform nil :accessor private-key)
    (peer-pubkey :initform nil :accessor peer-key)
 
+   (peername :initform nil :accessor peername :initarg :peername)
+
    (cipher :accessor cipher)
-   (hash :accessor hash)
+   (hashalgo :accessor hash-scheme)
+   (sigalgo :accessor signature-scheme)
+   (elliptic-curve :accessor tls-ec)
+
    (key-exchange-mode :accessor key-exchange-mode)
 
    (handshake-stream :initform
@@ -81,7 +86,8 @@
    (peer-app-key :accessor peer-app-key)
    (peer-app-iv :accessor peer-app-iv)))
 
-(defun make-tls-connection (socket
+(defun make-tls-connection (host
+			    socket
 			    state
 			    data
 			    accept-fn
@@ -90,7 +96,9 @@
 			    alert-fn
 			    disconnect-fn)
   (make-instance 'tls-connection
-		 :socket socket :state state
+		 :peername host
+		 :socket socket
+		 :state state
 		 :data data
 		 :accept-fn accept-fn
 		 :read-fn read-fn

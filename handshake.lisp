@@ -10,15 +10,20 @@
 		   :size (key-share-size key-share)
 		   :extension-type +key-share+)))
 
-(defun make-client-keyshare (group key-bytes)
-  (let ((key-share
-	 (make-instance 'key-share
-			:key-exchange key-bytes
-			:named-group group)))
-    (make-instance 'client-hello-key-share
-		   :key-shares (list key-share)
-		   :size (+ 2 (key-share-size key-share))
-		   :extension-type +key-share+)))
+(defun make-client-keyshare (groups keys)
+  (let ((key-shares
+	 (loop
+	    for key in keys
+	    for group in groups
+	    collect
+	      (make-instance 'key-share
+			     :key-exchange key
+			     :named-group group))))
+    (make-instance
+     'client-hello-key-share
+     :key-shares key-shares
+     :size (+ 2 (reduce #'+ (mapcar #'key-share-size key-shares)))
+     :extension-type +key-share+)))
 
 (defun make-server-supported-versions ()
   (make-instance 'server-supported-versions

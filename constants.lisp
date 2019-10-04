@@ -49,9 +49,7 @@
 (defconstant +TLS-ECDHE-RSA-WITH-AES-128-GCM-SHA256+ #xC02B)
 (defconstant +TLS-RSA-WITH-AES-256-CBC-SHA256+ #x003D)
 (defconstant +TLS-RSA-WITH-AES-128-CBC-SHA+ #x002F)
-
 (defconstant +TLS-DHE-RSA-WITH-AES-256-CBC-SHA256+ #x006B)
-
 
 (defconstant +CLIENT-HELLO+ 1)
 (defconstant +SERVER-HELLO+ 2)
@@ -146,3 +144,8 @@
 
 (defconstant +ec-basis-trinomial+ 0)
 (defconstant +ec-basis-pentanomial+ 1)
+
+(defun ec-named-curve-symbol (named-curve)
+  (cond
+    ((= named-curve +secp256r1+) :secp256r1)
+    ((= named-curve +x25519+) :curve25519)))

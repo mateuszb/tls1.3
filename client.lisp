@@ -2,6 +2,7 @@
 
 (defvar *client-connections*)
 (defvar *dispatchers* '())
+(defvar *key-exchange*)
 
 (defun client-dispatch-loop (dispatcher)
   (sb-sys:without-interrupts
@@ -65,13 +66,15 @@
 	  (format t "connecting...~%")))
 
       (with-dispatcher ((car dispatcher))
-	(on-write socket #'client-socket-connected)
+	(on-write socket #'client-socket-connected host)
 	(on-disconnect socket #'client-socket-disconnected))))
   (values))
 
 (defun client-socket-connected (ctx event)
-  (let ((socket (context-handle ctx)))
-    (let ((conn (make-tls-connection socket :CLIENT-HELLO
+  (declare (ignorable event))
+  (let ((socket (context-handle ctx))
+	(host (context-data ctx)))
+    (let ((conn (make-tls-connection host socket :CLIENT-HELLO
 				     ctx nil nil nil nil nil)))
       ;; associate connection data with the socket
       (setf (context-data ctx) conn)
@@ -192,7 +195,9 @@
 			  (read-value rectyp (tls-rx-stream tls)))
 			 (otherwise
 			  (let ((msg (decrypt-record tls hdr)))
-			    (client-process-record tls msg)))))
+			    (format t "msg arrived: ~a~%" msg)
+			    (client-process-record tls msg)
+			    ))))
 		      (otherwise
 		       (cond
 			 ((not (null msg)) (client-process-record tls msg))
@@ -266,11 +271,7 @@
 	 (nonce-iv (my-iv tls))
 	 (explicit-iv (ironclad:random-data 8))
 	 (iv (concatenate '(vector (unsigned-byte 8)) nonce-iv explicit-iv))
-	 (aead (make-aead-aes256-gcm key iv nonce)))
-    (format t "using key: ~a~%" (ironclad:byte-array-to-hex-string key))
-    (format t "using salt: ~a~%" (ironclad:byte-array-to-hex-string nonce-iv))
-    (format t "using iv: ~a~%" (ironclad:byte-array-to-hex-string explicit-iv))
-
+	 (aead (make-aead-aes256-gcm key iv 0)))
     (labels ((write-to-seq (msg)
 	       (alien-ring::with-output-to-byte-sequence (out (+ 4 (size finished-msg)))
 		 (write-value (type-of msg) out msg))))
@@ -286,68 +287,82 @@
 	(write-value 'tls-record (tx-stream tls) rec)
 	(write-value 'raw-bytes (tx-stream tls) explicit-iv :size (length explicit-iv))
 	(write-sequence ciphertext (tx-stream tls))
-	(write-sequence (ironclad:produce-tag aead) (tx-stream tls))
-	(format t "aead tag: ~a~%" (ironclad:byte-array-to-hex-string (ironclad:produce-tag aead)))
-	(format t "aead data: ~a~%" (ironclad:byte-array-to-hex-string aead-data))
-	(format t "plaintext: ~a~%" (ironclad:byte-array-to-hex-string plaintext))
-	(format t "ciphertext: ~a~%" (ironclad:byte-array-to-hex-string ciphertext))
-	(format t "length of plaintext: ~a~%" (length plaintext))
-	(format t "length of ciphertext: ~a~%" (length ciphertext))))
+	(write-sequence (ironclad:produce-tag aead) (tx-stream tls))))
 
     (on-write (socket tls) #'tls-tx)
     (setf (state tls) :NEGOTIATED)))
 
 
+(defun cipher->curve (cipher)
+  (cond
+    ((= cipher +TLS-ECDHE-RSA-WITH-AES-256-GCM-SHA384+) :secp256r1)
+    ((= cipher +TLS-AES-256-GCM-SHA384+) :x25519)))
+
+(defun get-key (tls)
+  (case (tls-ec tls)
+    (:secp256r1
+     (cdr (assoc (tls-ec tls) (public-key tls))))
+    (:x25519
+     (ironclad:curve25519-key-y
+      (cdr
+       (assoc (tls-ec tls) (public-key tls)))))))
+
 (defgeneric client-process-record (tls msg))
 
 (defmethod client-process-record ((tls tls12-connection) msg)
   (format t "tls 1.2 handler ~a~%" (type-of tls))
+  (format t "message type: ~a~%" (type-of msg))
   (etypecase msg
+    (vector
+     (format t "Application data?~%")
+     ;; do nothing?
+     )
     (server-hello
-     (format t "updating digest with server hello~%")
+     (format t "selected cipher: ~a~%" (selected-cipher msg))
+     (setf (tls-ec tls) (cipher->curve (selected-cipher msg)))
      (write-value 'server-hello (digest-stream tls) msg)
-     (print-digest tls)
      (setf (server-random tls) (random-bytes msg)))
 
     (alert
-     (format t "alert arrived: ~a:~a~%"
-	     (level msg) (description msg)))
+     (format t "alert arrived: ~a:~a~%" (level msg) (description msg)))
 
-    (change-cipher-spec
-     ;; everything should be encrypted after this record is processed
-     )
+    (change-cipher-spec)
 
     (tls12-certificate
-     (format t "updating digest with certificate~%")
-     (write-value 'tls12-certificate (digest-stream tls) msg)
-     (print-digest tls))
+     (write-value 'tls12-certificate (digest-stream tls) msg))
 
     (server-key-exchange-ecdh
-     (format t "updating digest with server key exchange~%")
      (write-value 'server-key-exchange-ecdh (digest-stream tls) msg)
-     (print-digest tls)
 
-     (setf (peer-key tls)
-	   (ironclad:make-public-key
-	    :curve25519 :y
-	    (make-array (length (point (point (params msg))))
-			:element-type '(unsigned-byte 8)
-			:initial-contents (point (point (params msg)))))))
+     (let ((ectype (curve-type (params (params msg)))))
+       (cond
+	 ((= ectype +named-curve+)
+	  (let ((curve (ec-named-curve-symbol (named-curve (params (params msg))))))
+	    (case curve
+	      (:curve25519
+	       (setf (tls-ec tls) :curve25519
+		     (peer-key tls)
+		     (ironclad:make-public-key
+		      :curve25519 :y
+		      (make-array (length (point (point (params msg))))
+				  :element-type '(unsigned-byte 8)
+				  :initial-contents (point (point (params msg)))))))
+	      (:secp256r1
+	       (format t "")
+	       ;; TODO: generate shared key
+	       )))))))
+
+    (finished
+     (format t "message arrived: ~a~%" msg)
+     (tls12-write tls "TEST123AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa blabla"))
 
     (server-hello-done
-     (format t "updating digest with server hello done~%")
-     (write-value 'server-hello-done (digest-stream tls) msg)
-     (print-digest tls)
-
      ;; add client key exchange message to the transmit queue
-     (generate-keys tls :curve25519)
-     (let ((kex (make-client-key-exchange
-		 (map 'list #'identity
-		      (ironclad:curve25519-key-y (public-key tls))))))
+     (let ((kex (make-client-key-exchange (get-key tls))))
+       ;; truncate the key list into a single key
+
        ;; update the digest
-       (format t "updating digest with client key exchange~%")
        (write-value 'client-key-exchange (digest-stream tls) kex)
-       (print-digest tls)
 
        ;; queue up key exchange record header
        (write-value 'tls-record (tx-stream tls)
@@ -375,42 +390,23 @@
 	    (premaster (shared-secret tls))
 	    (master (tls12-master-key premaster cr sr)))
 
-       (format t "master key length: ~a~%" (length master))
-       (format t "pre-master: ~a~%" (ironclad:byte-array-to-hex-string premaster))
-       (format t "master key: ~a~%" (ironclad:byte-array-to-hex-string master))
        (multiple-value-bind (my-key peer-key my-iv peer-iv)
 	   (tls12-key-schedule
 	    (tls12-final-key master sr cr))
-	 (format t "PEER KEY: ~a~%"
-		 (ironclad:byte-array-to-hex-string peer-key))
-	 (format t "MY KEY: ~a~%"
-		 (ironclad:byte-array-to-hex-string my-key))
-	 (format t "PEER IV: ~a~%"
-		 (ironclad:byte-array-to-hex-string peer-iv))
-	 (format t "MY IV: ~a~%"
-		 (ironclad:byte-array-to-hex-string my-iv))
-
 	 (setf (my-key tls) my-key
 	       (peer-key tls) peer-key
 	       (my-iv tls) my-iv
-	       (peer-iv tls) peer-iv)
-
-	 (format t "type of my key ~a~%" (type-of (my-key tls)))))
+	       (peer-iv tls) peer-iv)))
 
      (send-client-finished-msg tls (make-client-finished-msg tls))
 
-     (on-write (socket tls) #'tls-tx))
-
-    (t
-     #+off(when (plusp (stream-size (rx-data-stream tls)))
-       (when (read-fn tls)
-	 (funcall (read-fn tls)
-		  (data tls)
-		  (stream-size (rx-data-stream tls))))))))
+     (on-write (socket tls) #'tls-tx))))
 
 (defmethod client-process-record ((tls tls13-connection) msg)
   (etypecase msg
     (server-hello
+     ;; TODO: set the cipher information
+
      ;; find the key share extension in the hello msg
      (loop for ext in (extensions msg)
 	when (typep ext 'server-hello-key-share)
@@ -461,6 +457,8 @@
     (finished
      (write-value 'finished (digest-stream tls) msg)
 
+
+
      ;; create and send client finished message
      (send-client-finished-msg tls (make-client-finished-msg tls))
 
@@ -486,14 +484,15 @@
 (defun send-client-hello (tls)
   (let ((hello (make-instance 'client-hello)))
     (generate-keys tls :curve25519)
+    (generate-keys tls :secp256r1)
+
     (setf
      (handshake-type hello) +CLIENT-HELLO+
      (random-bytes hello) (ironclad:random-data 32)
      (session-id hello) (list)
      (ciphers hello) (list
-		      +TLS-AES-256-GCM-SHA384+
 		      +TLS-ECDHE-RSA-WITH-AES-256-GCM-SHA384+
-		      +TLS-ECDHE-RSA-WITH-AES-128-GCM-SHA256+)
+		      +TLS-AES-256-GCM-SHA384+)
      (compression hello) (list 0)
      (extensions hello) (list
 			 (make-instance 'client-supported-versions
@@ -501,23 +500,35 @@
 					:extension-type +SUPPORTED-VERSIONS+
 					:versions (list +TLS-1.3+ +TLS-1.2+))
 			 (make-instance 'supported-groups
-					:size (+ 2 (* 2 1))
-					:named-groups (list +x25519+)
+					:size (+ 2 (* 2 2))
+					:named-groups (list +x25519+ +secp256r1+)
 					:extension-type +SUPPORTED-GROUPS+)
 			 (make-instance 'ec-point-formats
 					:point-formats '(0)
 					:size 2
 					:extension-type +ec-point-formats+)
+			 (make-instance 'server-name-ext
+					:extension-type +server-name+
+					:size (+ 2 (* 1 (+ 1 2 (length (peername tls)))))
+					:names (list
+						(make-instance
+						 'server-name
+						 :hostname (map '(vector (unsigned-byte 8))
+								#'char-code (peername tls)))))
 			 (make-instance 'signature-schemes
-					:size (+ 2 (* 2 2))
+					:size (+ 2 (* 3 2))
 					:extension-type +signature-algorithms+
 					:signature-schemes
 					(list
 					 +rsa-pss-rsae-sha384+
-					 +rsa-pkcs1-sha384+))
+					 +rsa-pkcs1-sha384+
+					 +rsa-pkcs1-sha512+))
 			 (make-client-keyshare
-			  +x25519+
-			  (ironclad:curve25519-key-y (public-key tls)))))
+			  (list +secp256r1+ +x25519+)
+			  (list
+			   (cdr (assoc :secp256r1 (public-key tls)))
+			   (ironclad:curve25519-key-y
+			    (cdr (assoc :curve25519 (public-key tls))))))))
 
     (setf
      (size hello)
@@ -528,7 +539,7 @@
 
     (let ((record (make-instance 'tls-record
 				 :size (tls-size hello)
-				 :protocol-version +TLS-1.2+
+				 :protocol-version +TLS-1.0+
 				 :content-type +RECORD-HANDSHAKE+)))
       (write-value (type-of record) (tx-stream tls) record)
       (write-value (type-of hello) (tx-stream tls) hello)
@@ -562,7 +573,7 @@
 	 (nonce (get-in-nonce! tls))
 	 (key (peer-key tls))
 	 (explicit-iv (make-array 8 :element-type '(unsigned-byte 8)))
-	 (salt-iv (subseq (peer-iv tls) 0 4))
+	 (salt-iv (peer-iv tls))
 	 (iv nil)
 	 (aead-data
 	  (tls12-make-aead-data
@@ -572,13 +583,8 @@
     (read-sequence ciphertext (tls-rx-stream tls))
 
     ;; prepare the IV
-    (format t "PEER KEY: ~a~%" (ironclad:byte-array-to-hex-string (peer-key tls)))
-    (format t "PEER IV: ~a~%" (ironclad:byte-array-to-hex-string (peer-iv tls)))
-    (format t "MY IV: ~a~%" (ironclad:byte-array-to-hex-string (my-iv tls)))
     (setf iv (concatenate '(vector (unsigned-byte 8)) salt-iv explicit-iv))
-    ;;(format t "KEY: ~a~%" (ironclad:byte-array-to-hex-string key))
-    (format t "PEER RECOVERED IV: ~a~%" (ironclad:byte-array-to-hex-string iv))
-    (let* ((aead (make-aead-aes256-gcm key iv nonce)))
+    (let* ((aead (make-aead-aes256-gcm key iv 0)))
       (let* ((plaintext (make-array (- (length ciphertext) 16) :element-type '(unsigned-byte 8))))
 	(ironclad:process-associated-data aead aead-data)
 	(multiple-value-bind (consumed produced)
@@ -588,4 +594,71 @@
 	     :ciphertext-end (- (length ciphertext) 16))
 	  (declare (ignore consumed produced)))
 
-	(format t "plaintext: ~a~%" (ironclad:byte-array-to-hex-string plaintext))))))
+	(format t "plaintext: ~a~%" (ironclad:byte-array-to-hex-string plaintext))
+
+	(let ((state (state tls))
+	      (type (tls-content->class (content-type hdr))))
+	  (case state
+	    (:NEGOTIATED
+	     (ecase type
+	       (application-data
+		(write-sequence
+		 plaintext (rx-data-stream tls) :start 0 :end (length plaintext)))
+	       ((handshake alert)
+		(let ((msg))
+		  (with-input-from-sequence (in plaintext)
+		    (setf msg (read-value type in)))
+		  msg))))))))))
+
+(defmethod tls12-encrypt-messages (tls msgs)
+  (let* ((total-size (reduce #'+ (mapcar #'tls-size msgs)))
+	 (key (my-key tls))
+	 (explicit-iv (ironclad:random-data 8))
+	 (salt-iv (my-iv tls))
+	 (combined-iv (concatenate '(vector (unsigned-byte 8)) salt-iv explicit-iv)))
+    (labels ((write-to-seq (msg)
+	       (alien-ring::with-output-to-byte-sequence (out (+ 4 total-size))
+		 (write-value (type-of msg) out msg))))
+      (dolist (msg msgs)
+	(let* ((plaintext (write-to-seq msg))
+	       (len (length plaintext))
+	       (nonce (get-out-nonce! tls))
+	       (aead (make-aead-aes256-gcm key combined-iv 0))
+	       (aead-data (tls12-make-aead-data nonce +RECORD-APPLICATION-DATA+ +TLS-1.2+ len))
+	       (ciphertext (ironclad:encrypt-message aead plaintext :associated-data aead-data))
+	       (rec (make-instance 'tls-record
+				   :size (+ 8 len 16)
+				   :content-type +RECORD-APPLICATION-DATA+)))
+	  (write-value 'tls-record (tx-stream tls) rec)
+	  (write-value 'raw-bytes (tx-stream tls) explicit-iv :size (length explicit-iv))
+	  (write-sequence ciphertext (tx-stream tls))
+	  (write-sequence (ironclad:produce-tag aead) (tx-stream tls)))))))
+
+(defmethod tls12-write (tls data)
+  (let* ((len (length data))
+	 (key (my-key tls))
+	 (explicit-iv (ironclad:random-data 8))
+	 (salt-iv (my-iv tls))
+	 (plaintext nil)
+	 (combined-iv (concatenate '(vector (unsigned-byte 8)) salt-iv explicit-iv)))
+    (etypecase data
+      (string
+       (setf plaintext
+	     (make-array (length data)
+			 :element-type '(unsigned-byte 8)
+			 :initial-contents (map '(vector (unsigned-byte 8)) #'char-code data))))
+      (vector
+       (setf plaintext data)))
+
+    (let* ((nonce (get-out-nonce! tls))
+	   (aead (make-aead-aes256-gcm key combined-iv 0))
+	   (aead-data (tls12-make-aead-data nonce +RECORD-APPLICATION-DATA+ +TLS-1.2+ len))
+	   (ciphertext (ironclad:encrypt-message aead plaintext :associated-data aead-data))
+	   (rec (make-instance 'tls-record
+			       :size (+ 8 len 16)
+			       :content-type +RECORD-APPLICATION-DATA+)))
+      (write-value 'tls-record (tx-stream tls) rec)
+      (write-value 'raw-bytes (tx-stream tls) explicit-iv :size (length explicit-iv))
+      (write-sequence ciphertext (tx-stream tls))
+      (write-sequence (ironclad:produce-tag aead) (tx-stream tls))))
+  (on-write (socket tls) #'tls-tx))

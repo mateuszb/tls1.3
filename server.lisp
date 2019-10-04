@@ -72,7 +72,6 @@
 	   (alien-ring::ring-buffer-advance-wr buf ret)
 	   (incf nrecvd ret)
 	   (decf nbytes ret)))
-    (format t "received ~a bytes~%" nrecvd)
     nrecvd))
 
 (defun tx-from-buffer (sd buf n)
@@ -97,25 +96,17 @@
 		   (and (plusp (stream-space-available tx))
 			(plusp (queue-count (tx-queue tls)))))
 	 do
-	   (format t "ring buffer has ~a bytes to xfer~%" (stream-size tx))
 	   (handler-case
 	       (progn
 		 (let ((nsent (tx-from-buffer
-			       sd (stream-buffer tx) (stream-size tx))))
-		   (format t "sent ~a immediate bytes~%" nsent))
-
+			       sd (stream-buffer tx) (stream-size tx)))))
 		 (when (plusp (queue-count (tx-queue tls)))
 		  (let ((min-xfer (+ 1 5 16))
 			(free-space (alien-ring:ring-buffer-available (stream-buffer tx))))
 		    (when (> free-space min-xfer)
-		      (format t "ring free space: ~a~%" free-space)
 		      (let ((elem (queue-peek (tx-queue tls))))
-			(format t "current element has xfered so far: ~a bytes~%" (car elem))
 			(let ((remaining (- (length (cdr elem)) (car elem))))
-			  (format t "remaining bytes: ~a~%" remaining)
 			  (let ((xfer-size (min (- free-space min-xfer) remaining)))
-			    (format t "next xfer size: ~a~%" xfer-size)
-
 			    (let ((record (make-instance 'tls-record
 							 :size (+ 16 1 xfer-size)
 							 :content-type +RECORD-APPLICATION-DATA+)))
@@ -127,10 +118,7 @@
 				  (write-sequence authtag (tx-stream tls)))))
 
 			    (incf (car elem) xfer-size)
-			    (format t "total scheduled xfers ~a out of ~a bytes~%"
-				    (car elem) (length (cdr elem)))
 			    (when (= (car elem) (length (cdr elem)))
-			      (format t "xfer complete. dequeuing.~%")
 			      (dequeue (tx-queue tls))))))))))
 
 	     (operation-would-block ()
@@ -401,9 +389,23 @@
     (ironclad:diffie-hellman mine theirs)))
 
 (defun generate-keys (tls type)
-  (multiple-value-bind (secret public) (ironclad:generate-key-pair type)
-    (setf (private-key tls) secret
-	  (public-key tls) public)))
+  (case type
+    (:secp256r1
+     (format t "SECP256~%")
+     (let* ((secret-key (ironclad:random-data 32))
+	    (d (octets-to-integer secret-key 0 (length secret-key)))
+	    (order (curve-order +curve-secp256r1+))
+	    (result (multiply d (projective-base-point +curve-secp256r1+) +curve-secp256r1+))
+	    (zinv (modular-inverse (aref result 2) order))
+	    (pubkey (integer-to-octets (mod (* (aref result 1) zinv) order))))
+       
+       (setf (private-key tls) (acons :secp256r1 secret-key (private-key tls))
+	     (public-key tls) (acons :secp256r1 pubkey (public-key tls)))))
+    
+    (:curve25519
+     (multiple-value-bind (secret public) (ironclad:generate-key-pair type)
+       (setf (private-key tls) (acons :curve25519 secret (private-key tls))
+	     (public-key tls) (acons :curve25519 public (public-key tls)))))))
 
 (defun send-change-cipher-spec (tls)
   (let ((rec (make-instance 'tls-record
@@ -423,9 +425,6 @@
       (setf cipher (pick-common-cipher (ciphers client-hello)))
       (unless cipher
 	(error (make-condition 'no-common-cipher)))
-
-      ;; generate key pair
-      (generate-keys tls :curve25519)
 
       ;; iterate over the extensions and process relevant information
       (loop for ext in (extensions client-hello)
@@ -614,7 +613,7 @@
 
 	(let* ((content-type-pos (scan-for-content-type plaintext))
 	       (type (tls-content->class (aref plaintext content-type-pos))))
-	  (format t "encrypted content type = ~a~%" type)
+
 	  (case (state tls)
 	    (:SERVER-FINISHED
 	     (with-input-from-sequence (in plaintext)
@@ -626,7 +625,6 @@
 		(let ((msg))
 		  (with-input-from-sequence (in plaintext)
 		    (setf msg (read-value type in)))
-		  (format t "message: ~a~%" (type-of msg))
 		  msg))
 	       (alert
 		(let ((alert))
