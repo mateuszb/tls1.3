@@ -331,7 +331,6 @@
     (server-key-exchange-ecdh
      (write-value 'server-key-exchange-ecdh (digest-stream tls) msg)
 
-
      (let ((ectype (curve-type (params (params msg)))))
        (cond
 	 ((= ectype +named-curve+)
