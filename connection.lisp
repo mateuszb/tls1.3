@@ -40,6 +40,7 @@
 
    ;; callbacks
    (accept-fn :initform nil :accessor accept-fn :initarg :accept-fn)
+   (connect-fn :initform nil :accessor connect-fn :initarg :connect-fn)
    (read-fn :initform nil :accessor read-fn :initarg :read-fn)
    (write-fn :initform nil :accessor write-fn :initarg :write-fn)
    (alert-fn :initform nil :accessor alert-fn :initarg :alert-fn)
@@ -92,13 +93,14 @@
    (peer-app-iv :accessor peer-app-iv)))
 
 (defun make-tls-connection
-    (host socket state data accept-fn read-fn
+    (host socket state data connect-fn read-fn
      write-fn alert-fn disconnect-fn)
   (make-instance 'tls-connection
 		 :peername host
 		 :socket socket
 		 :state state
 		 :data data
+		 :connect-fn connect-fn
 		 :read-fn read-fn
 		 :write-fn write-fn
 		 :alert-fn alert-fn
