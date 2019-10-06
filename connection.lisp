@@ -39,11 +39,11 @@
    (certificate :accessor certificate)
 
    ;; callbacks
-   (accept-fn :accessor accept-fn :initarg :accept-fn)
-   (read-fn :accessor read-fn :initarg :read-fn)
-   (write-fn :accessor write-fn :initarg :write-fn)
-   (alert-fn :accessor alert-fn :initarg :alert-fn)
-   (disconnect-fn :accessor disconnect-fn :initarg :disconnect-fn)
+   (accept-fn :initform nil :accessor accept-fn :initarg :accept-fn)
+   (read-fn :initform nil :accessor read-fn :initarg :read-fn)
+   (write-fn :initform nil :accessor write-fn :initarg :write-fn)
+   (alert-fn :initform nil :accessor alert-fn :initarg :alert-fn)
+   (disconnect-fn :initform nil :accessor disconnect-fn :initarg :disconnect-fn)
 
    ;; overflow transmit queue of 512 slots
    (tx-queue :initform (make-queue 512) :reader tx-queue)
@@ -99,7 +99,6 @@
 		 :socket socket
 		 :state state
 		 :data data
-		 :accept-fn accept-fn
 		 :read-fn read-fn
 		 :write-fn write-fn
 		 :alert-fn alert-fn
