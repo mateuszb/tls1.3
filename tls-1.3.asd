@@ -21,12 +21,14 @@
 	       (:file "certificate" :depends-on ("packages"))
 	       (:file "condition" :depends-on ("packages"))
 	       (:file "util" :depends-on ("packages" "record" "constants"))
+	       (:file "pubkey" :depends-on ("packages"))
 	       (:file "server" :depends-on ("connection"
 					    "certificate"
 					    "record"
 					    "condition"
 					    "packages"))
 	       (:file "client" :depends-on ("record"
+					    "pubkey"
 					    "connection"
 					    "util"
 					    "elliptic-curves"

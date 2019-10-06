@@ -34,7 +34,7 @@
 		 (dispatch-events events))))))))
 
 (defun make-new-context (new-socket)
-  (make-tls-connection
+  (make-server-tls-connection
    new-socket
    :CLIENT-HELLO
    nil
@@ -205,7 +205,7 @@
 
 		(setf (tls-records tls)
 		      (append (tls-records tls) (list hdr)))
-		
+
 		(cond
 		  ;; check if the ring buffer has enough data for a
 		  ;; complete record and if so, process it immediately
@@ -232,7 +232,7 @@
 	    do
 	      (server-process-record tls)
 	      (pop (tls-records tls))))
-	 
+
 
 	(alert-arrived (a)
 	  (with-slots (alert) a
@@ -336,7 +336,7 @@
 	   (etypecase record
 	     (alert
 	      (format t "alert arrived: ~a:~a~%" (level record) (description record)))
-	     
+
 	     (change-cipher-spec
 	      (format t "peer running in compatibility mode. ignoring cipher change packet~%"))
 
@@ -384,28 +384,10 @@
    (intersection ciphers (list +TLS-AES-256-GCM-SHA384+))))
 
 (defun compute-dh-shared-secret (tls)
-  (let ((mine (private-key tls))
-	(theirs (peer-key tls)))
-    (ironclad:diffie-hellman mine theirs)))
-
-(defun generate-keys (tls type)
-  (case type
-    (:secp256r1
-     (format t "SECP256~%")
-     (let* ((secret-key (ironclad:random-data 32))
-	    (d (octets-to-integer secret-key 0 (length secret-key)))
-	    (order (curve-order +curve-secp256r1+))
-	    (result (multiply d (projective-base-point +curve-secp256r1+) +curve-secp256r1+))
-	    (zinv (modular-inverse (aref result 2) order))
-	    (pubkey (integer-to-octets (mod (* (aref result 1) zinv) order))))
-       
-       (setf (private-key tls) (acons :secp256r1 secret-key (private-key tls))
-	     (public-key tls) (acons :secp256r1 pubkey (public-key tls)))))
-    
-    (:curve25519
-     (multiple-value-bind (secret public) (ironclad:generate-key-pair type)
-       (setf (private-key tls) (acons :curve25519 secret (private-key tls))
-	     (public-key tls) (acons :curve25519 public (public-key tls)))))))
+  (declare (optimize (debug 3) (speed 0)))
+  (let ((mine (privkey tls))
+	(theirs (peer-key-exchange-key tls)))
+    (diffie-hellman theirs mine)))
 
 (defun send-change-cipher-spec (tls)
   (let ((rec (make-instance 'tls-record
@@ -416,13 +398,16 @@
     (write-value (type-of msg) (tx-stream tls) msg)))
 
 (defun send-server-hello (tls client-hello)
-  (with-slots (txbuf state current-record) tls
+  (with-slots (txbuf state current-record pubkey seckey) tls
     (let ((exts '())
 	  (supported-group 0)
 	  (key-share-group 0)
-	  (cipher nil))
+	  (cipher nil)
+	  (key (make-curve25519-keypair)))
       ;; pick a common cipher
-      (setf cipher (pick-common-cipher (ciphers client-hello)))
+      (setf cipher (pick-common-cipher (ciphers client-hello))
+	    pubkey key
+	    seckey key)
       (unless cipher
 	(error (make-condition 'no-common-cipher)))
 
@@ -439,15 +424,20 @@
 
 	      (unless supported-group
 		(error 'no-common-group-found))
-	      (push (make-server-keyshare
-		     supported-group
-		     (ironclad:curve25519-key-y (public-key tls)))
-		    exts))
+
+	      (push
+	       (make-server-keyshare
+		supported-group
+		(public-key-bytes (pubkey tls))
+		;(ironclad:curve25519-key-y (pubkey tls))
+		)
+	       exts))
+
 	     (client-hello-key-share
-	      (let ((keyshare
-		     (find +x25519+ (key-shares ext) :key #'named-group :test #'=)))
-		(setf (peer-key tls)
-		      (ironclad:make-public-key :curve25519 :y (key-exchange keyshare))
+	      (let ((keyshare (find +x25519+ (key-shares ext) :key #'named-group :test #'=)))
+		(setf (peer-key-exchange-key tls)
+		      (make-curve25519-public-key (key-exchange keyshare))
+		      ;(ironclad:make-public-key :curve25519 :y (key-exchange keyshare))
 		      key-share-group (named-group keyshare))
 
 		;; diffie-hellman key exchange

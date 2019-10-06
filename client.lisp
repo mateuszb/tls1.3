@@ -79,148 +79,158 @@
       ;; associate connection data with the socket
       (setf (context-data ctx) conn)
       ;; push client hello packet onto the transmit queue
-      (send-client-hello conn)
+      (send-client-hello (context-data ctx))
       (setf (state (context-data ctx)) :SERVER-HELLO)
       ;; enable write notifications via tls-client-tx handler
-      (on-write socket #'tls-tx))))
-
-(defun print-digest (tls)
-  (format t "digest: ~a~%" (ironclad:byte-array-to-hex-string
-			    (ironclad:produce-digest
-			     (digest-stream tls)))))
+      (on-write socket #'tls-tx (context-data ctx)))))
 
 (defun tls-client-rx (ctx event)
   "Top level client read notification handler to plug into the reactor."
   (declare (ignore event))
   (let* ((sd (context-handle ctx))
 	 (nbytes (socket:get-rxbytes sd))
-	 (*mode* :SERVER)
 	 (tls (context-data ctx))
+	 (*mode* :SERVER)
 	 (*version* (tls-version tls)))
-    (handler-case
-	(with-slots (rx rxbuf) tls
-	  ;; read pending bytes from the socket into the tls buffer
-	  (rx-into-buffer sd (stream-buffer rx) nbytes)
+    (with-slots (rx rxbuf version state records tlsrx socket) tls
+      (handler-case
+	  (progn
+	    ;; read pending bytes from the socket into the tls buffer
+	    (rx-into-buffer sd (stream-buffer rx) nbytes)
 
-	  ;; read the record header (5 bytes) from the rx queue
-	  ;; and push it to the records list.
-	  (loop
-	     while (>= (stream-size rx) 5)
-	     do
-	       (let ((hdr (read-value 'tls-record rx)))
-		 ;; sanity check the record header and only allow
-		 ;; TLS-1.2 because the field is obsoleted. anything
-		 ;; less than TLS 1.2 is dropped
-		 (unless (and
-			  (valid-content-p (content-type hdr))
-			  (valid-version-p (protocol-version hdr)))
+	    ;; read the record header (5 bytes) from the rx queue
+	    ;; and push it to the records list.
+	    (loop
+	       while (>= (stream-size rx) 5)
+	       do
+		 (let ((hdr (read-value 'tls-record rx)))
+		   ;; sanity check the record header and only allow
+		   ;; TLS-1.2 because the field is obsoleted. anything
+		   ;; less than TLS 1.2 is dropped
+		   (unless (and
+			    (valid-content-p (content-type hdr))
+			    (valid-version-p (protocol-version hdr)))
+		     ;; stop reading from this socket
+		     (del-read socket)
+		     ;; on next write, we send the protocol alert
+		     (on-write sd #'send-protocol-alert tls)
+		     (return-from tls-client-rx))
 
-		   ;; stop reading from this socket
-		   (del-read (socket tls))
+		   ;; deserialize the header
+		   (setf (tls-records tls) (append records (list hdr)))
 
-		   ;; on next write, we send the protocol alert
-		   (on-write sd #'send-protocol-alert tls)
-		   (return-from tls-client-rx))
+		   (cond
+		     ;; check if the ring buffer has enough data for a
+		     ;; complete record and if so, process it immediately
+		     ((>= (stream-size rx) (size hdr))
+		      ;; here, we need to read the packet bytes and transfer
+		      ;; them into another buffer that is aggregating
+		      ;; fragments into complete higher level packets.  we
+		      ;; can't read the packet yet because it could have
+		      ;; been fragmented across many records
 
-		 ;; deserialize the header
-		 (setf (tls-records tls)
-		       (append (tls-records tls) (list hdr)))
+		      ;; transfer the record bytes from the RX stream into
+		      ;; TLS-RX de-encapsulating from the record layer
+		      (transfer-rx-record tls hdr))
 
-		 (cond
-		   ;; check if the ring buffer has enough data for a
-		   ;; complete record and if so, process it immediately
-		   ((>= (stream-size rx) (size hdr))
-		    ;; here, we need to read the packet bytes and transfer
-		    ;; them into another buffer that is aggregating
-		    ;; fragments into complete higher level packets.  we
-		    ;; can't read the packet yet because it could have
-		    ;; been fragmented across many records
+		     ;; if not enough data present, we need to wait for
+		     ;; another read event to continue filling the record
+		     ;; in such case we terminate the loop and start
+		     ;; processing completed packets
+		     ((< (stream-size rx) (size hdr)) (loop-finish)))))
 
-		    ;; transfer the record bytes from the RX stream into
-		    ;; TLS-RX de-encapsulating from the record layer
-		    (transfer-rx-record tls hdr))
-
-		   ;; if not enough data present, we need to wait for
-		   ;; another read event to continue filling the record
-		   ;; in such case we terminate the loop and start
-		   ;; processing completed packets
-		   ((< (stream-size rx) (size hdr)) (loop-finish)))))
-
-
-	  ;; process de-encapsulated records until we
-	  ;; reach the end of the list
-	  (loop
-	     for hdr in (tls-records tls)
-	     do
-	       (format t "record size: ~a~%" (size hdr))
-	       (let ((rectyp (get-record-content-type hdr))
-		     (msg nil))
-		 (when (eq (type-of tls) 'tls-connection)
-		   (setf msg (read-value rectyp (tls-rx-stream tls)))
-		   (let* ((ver (get-version msg)))
-		     (cond
-		       ((= ver +TLS-1.2+)
-			(change-class tls 'tls12-connection)
-			(setf *version* +TLS-1.2+
-			      (tls-version tls) +TLS-1.2+))
-		       ((= ver +TLS-1.3+)
-			(change-class tls 'tls13-connection)
-			(setf *version* +TLS-1.3+
-			      (tls-version tls) +TLS-1.3+))
-		       (t (on-write (socket tls) #'send-protocol-alert tls)
-			  (del-read (socket tls))
-			  (return-from tls-client-rx)))))
-
-		 (cond
-		   ((= *version* +TLS-1.3+)
-		    (cond
-		      ((eq rectyp 'application-data)
-		       (format t "encrypted packet~%")
-		       (let ((msg (decrypt-record tls hdr)))
-			 (client-process-record tls msg)))
-		      (t
+	    ;; process de-encapsulated records until we
+	    ;; reach the end of the list
+	    (loop
+	       for hdr in records
+	       do
+		 (let ((rectyp (get-record-content-type hdr))
+		       (msg nil))
+		   (when (eq (type-of tls) 'tls-connection)
+		     (setf msg (read-value rectyp tlsrx))
+		     (let* ((ver (get-version msg)))
 		       (cond
-			 ((not (null msg)) (client-process-record tls msg))
-			 (t
-			  (format t "will read ~a packet~%" rectyp)
-			  (let ((msg (read-value rectyp (tls-rx-stream tls))))
-			    (format t "unencrypted packet~%")
-			    (client-process-record tls msg)))))))
-		   ((= *version* +TLS-1.2+)
-		    (case (state tls)
-		      (:NEGOTIATED
-		       (case rectyp
-			 (change-cipher-spec
-			  (format t "reading change cipher spec~%")
-			  (read-value rectyp (tls-rx-stream tls)))
-			 (otherwise
-			  (let ((msg (decrypt-record tls hdr)))
-			    (format t "msg arrived: ~a~%" msg)
-			    (client-process-record tls msg)
-			    ))))
-		      (otherwise
-		       (cond
-			 ((not (null msg)) (client-process-record tls msg))
-			 (t
-			  (let ((msg (read-value rectyp (tls-rx-stream tls))))
-			    (client-process-record tls msg)))))))))
-	       (pop (tls-records tls))
-	       (format t "stream size after processing ~a~%"
-		       (stream-size (tls-rx-stream tls)))))
+			 ((= ver +TLS-1.2+)
+			  (setf (context-data ctx)
+				(change-class tls 'tls12-connection)
+				*version* +TLS-1.2+
+				version +TLS-1.2+))
 
-      (alert-arrived (a)
-	(with-slots (alert) a
-	  (format t "alert arrived: ~a:~a~%" (level alert) (description alert))
-	  (on-write (socket tls) #'send-close-notify)))
+			 ((= ver +TLS-1.3+)
+			  (setf (context-data ctx)
+				(change-class tls 'tls13-connection)
+				*version* +TLS-1.3+
+				version +TLS-1.3+)
 
-      (socket-eof ()
-	(format t "disconnecting on eof~%")
-	(rem-handle (socket tls))
-	(disconnect (socket tls)))
+			  ;; remove all other keys different than curve 25519
+			  (let ((pubkeys
+				 (cdar
+				  (delete-if-not
+				   (lambda (x) (eq x :curve25519))
+				   (pubkey tls) :key #'car)))
+				(privkeys
+				 (cdar
+				  (delete-if-not
+				   (lambda (x) (eq x :curve25519))
+				   (privkey tls) :key #'car))))
+			    (setf (slot-value tls 'pubkey) pubkeys)
+			    (setf (slot-value tls 'seckey) privkeys)))
 
-      (no-common-cipher ()
-	(del-read (socket tls))
-	(on-write (socket tls) #'send-insufficient-security-alert)))))
+			 (t (on-write socket #'send-protocol-alert tls)
+			    (del-read socket)
+			    (return-from tls-client-rx)))))
+
+		   (cond
+		     ((= *version* +TLS-1.3+)
+		      (cond
+			((eq rectyp 'application-data)
+			 (format t "encrypted packet~%")
+			 (let ((msg (decrypt-record tls hdr)))
+			   (client-process-record tls msg)))
+			(t
+			 (cond
+			   ((not (null msg)) (client-process-record tls msg))
+			   (t
+			    (format t "will read ~a packet~%" rectyp)
+			    (let ((msg (read-value rectyp tlsrx)))
+			      (format t "unencrypted packet~%")
+			      (client-process-record tls msg)))))))
+
+		     ((= *version* +TLS-1.2+)
+		      (case (state tls)
+			(:NEGOTIATED
+			 (case rectyp
+			   (change-cipher-spec
+			    (format t "reading change cipher spec~%")
+			    (read-value rectyp tlsrx))
+			   (otherwise
+			    (let ((msg (decrypt-record tls hdr)))
+			      (format t "msg arrived: ~a~%" msg)
+			      (client-process-record tls msg)))))
+			(otherwise
+			 (cond
+			   ((not (null msg))
+			    (client-process-record tls msg))
+			   (t
+			    (let ((msg (read-value rectyp tlsrx)))
+			      (client-process-record tls msg)))))))))
+		 (pop records)
+		 (format t "stream size after processing ~a~%"
+			 (stream-size tlsrx))))
+
+	(alert-arrived (a)
+	  (with-slots (alert) a
+	    (format t "alert arrived: ~a:~a~%" (level alert) (description alert))
+	    (on-write socket #'send-close-notify)))
+
+	(socket-eof ()
+	  (format t "disconnecting on eof~%")
+	  (rem-handle socket)
+	  (disconnect socket))
+
+	(no-common-cipher ()
+	  (del-read socket)
+	  (on-write socket #'send-insufficient-security-alert))))))
 
 (defgeneric make-client-finished-msg (tls))
 (defmethod make-client-finished-msg ((tls tls13-connection))
@@ -240,7 +250,6 @@
   (let* ((digest (ironclad:produce-digest (digest-stream tls)))
 	 (master (tls12-master-key (shared-secret tls) (client-random tls) (server-random tls)))
 	 (finished (tls12-finished-hash master digest)))
-    (format t "finished hash: ~a~%" (ironclad:byte-array-to-hex-string finished))
     (make-instance
      'finished
      :size 12
@@ -298,28 +307,16 @@
     ((= cipher +TLS-ECDHE-RSA-WITH-AES-256-GCM-SHA384+) :secp256r1)
     ((= cipher +TLS-AES-256-GCM-SHA384+) :x25519)))
 
-(defun get-key (tls)
-  (case (tls-ec tls)
-    (:secp256r1
-     (cdr (assoc (tls-ec tls) (public-key tls))))
-    (:x25519
-     (ironclad:curve25519-key-y
-      (cdr
-       (assoc (tls-ec tls) (public-key tls)))))))
-
 (defgeneric client-process-record (tls msg))
 
 (defmethod client-process-record ((tls tls12-connection) msg)
-  (format t "tls 1.2 handler ~a~%" (type-of tls))
-  (format t "message type: ~a~%" (type-of msg))
   (etypecase msg
     (vector
-     (format t "Application data?~%")
      ;; do nothing?
-     )
+     (format t "Application data?~%"))
+
     (server-hello
-     (format t "selected cipher: ~a~%" (selected-cipher msg))
-     (setf (tls-ec tls) (cipher->curve (selected-cipher msg)))
+     (setf (cipher tls) (selected-cipher msg))
      (write-value 'server-hello (digest-stream tls) msg)
      (setf (server-random tls) (random-bytes msg)))
 
@@ -334,6 +331,7 @@
     (server-key-exchange-ecdh
      (write-value 'server-key-exchange-ecdh (digest-stream tls) msg)
 
+
      (let ((ectype (curve-type (params (params msg)))))
        (cond
 	 ((= ectype +named-curve+)
@@ -341,33 +339,47 @@
 	    (case curve
 	      (:curve25519
 	       (setf (tls-ec tls) :curve25519
-		     (peer-key tls)
-		     (ironclad:make-public-key
-		      :curve25519 :y
-		      (make-array (length (point (point (params msg))))
-				  :element-type '(unsigned-byte 8)
-				  :initial-contents (point (point (params msg)))))))
+		     (peer-key-exchange-key tls)
+		     (make-curve25519-public-key
+		      (point (point (params msg)))))
+	       ;; remove all other keys from this field
+	       (let ((pubkeys (pubkey tls))
+		     (privkeys (privkey tls)))
+		 (setf (pubkey tls)  (cdr (assoc :curve25519 pubkeys))
+		       (privkey tls) (cdr (assoc :curve25519 privkeys)))))
+
 	      (:secp256r1
-	       (format t "")
-	       ;; TODO: generate shared key
-	       )))))))
+	       (setf (tls-ec tls) :secp256r1
+		     (peer-key-exchange-key tls)
+		     (make-secp256r1-public-key
+		      (make-array
+		       64 :element-type '(unsigned-byte 8)
+		       :initial-contents (cdr (point (point (params msg)))))))
+	       (let ((pubkeys (cdar
+			       (delete-if-not
+				(lambda (x) (eq x :secp256r1)) (pubkey tls) :key #'car)))
+		     (privkeys (cdar
+				(delete-if-not
+				 (lambda (x) (eq x :secp256r1)) (privkey tls) :key #'car))))
+		 (setf (slot-value tls 'pubkey) pubkeys)
+		 (setf (slot-value tls 'seckey) privkeys)))))))))
 
     (finished
-     (format t "message arrived: ~a~%" msg)
-     (tls12-write tls "TEST123AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa blabla"))
+     ;; TODO: call client callback here?
+     )
 
     (server-hello-done
-     ;; add client key exchange message to the transmit queue
-     (let ((kex (make-client-key-exchange (get-key tls))))
-       ;; truncate the key list into a single key
+     (write-value 'server-hello-done (digest-stream tls) msg)
 
+     ;; add client key exchange message to the transmit queue
+     (let ((kex (make-client-key-exchange (coerce (public-key-bytes (pubkey tls)) 'list))))
        ;; update the digest
        (write-value 'client-key-exchange (digest-stream tls) kex)
 
        ;; queue up key exchange record header
        (write-value 'tls-record (tx-stream tls)
 		    (make-instance
-		     'tls-record :size 37
+		     'tls-record :size (+ 4 1 (length (pubkey kex)))
 		     :content-type +RECORD-HANDSHAKE+))
 
        ;; queue up key exchange
@@ -405,16 +417,15 @@
 (defmethod client-process-record ((tls tls13-connection) msg)
   (etypecase msg
     (server-hello
-     ;; TODO: set the cipher information
+     (setf (cipher tls) (selected-cipher msg))
 
      ;; find the key share extension in the hello msg
      (loop for ext in (extensions msg)
 	when (typep ext 'server-hello-key-share)
 	do
 	  (let ((keyshare (key ext)))
-	    (setf (peer-key tls)
-		  (ironclad:make-public-key
-		   :curve25519 :y (key-exchange keyshare)))
+	    (setf (peer-key-exchange-key tls)
+		  (make-curve25519-public-key (key-exchange keyshare)))
 
 	    ;; diffie-hellman key exchange
 	    (setf (shared-secret tls)
@@ -458,9 +469,9 @@
      (write-value 'finished (digest-stream tls) msg)
 
 
-
      ;; create and send client finished message
-     (send-client-finished-msg tls (make-client-finished-msg tls))
+     (send-client-finished-msg
+      tls (make-client-finished-msg tls))
 
      ;; switch the keys
      (multiple-value-bind (ss sk siv cs ck civ)
@@ -482,11 +493,14 @@
 		  (stream-size (rx-data-stream tls))))))))
 
 (defun send-client-hello (tls)
-  (let ((hello (make-instance 'client-hello)))
-    (generate-keys tls :curve25519)
-    (generate-keys tls :secp256r1)
-
+  (let ((hello (make-instance 'client-hello))
+	(secpkey (make-secp256r1-keypair))
+	(curve25519key (make-curve25519-keypair)))
     (setf
+     (pubkey tls) (list (cons :secp256r1 secpkey)
+			(cons :curve25519 curve25519key))
+     (privkey tls) (list (cons :secp256r1 secpkey)
+			 (cons :curve25519 curve25519key))
      (handshake-type hello) +CLIENT-HELLO+
      (random-bytes hello) (ironclad:random-data 32)
      (session-id hello) (list)
@@ -524,11 +538,10 @@
 					 +rsa-pkcs1-sha384+
 					 +rsa-pkcs1-sha512+))
 			 (make-client-keyshare
-			  (list +secp256r1+ +x25519+)
+			  (list +x25519+ +secp256r1+)
 			  (list
-			   (cdr (assoc :secp256r1 (public-key tls)))
-			   (ironclad:curve25519-key-y
-			    (cdr (assoc :curve25519 (public-key tls))))))))
+			   (public-key-bytes (cdr (assoc :curve25519 (pubkey tls))))
+			   (public-key-bytes (cdr (assoc :secp256r1 (pubkey tls))))))))
 
     (setf
      (size hello)
@@ -547,13 +560,10 @@
       (setf (client-random tls) (random-bytes hello))
 
       ;; update digest stream
-      (format t "updating digest with client hello~%")
       (write-value 'client-hello (digest-stream tls) hello)
-      (print-digest tls)
-      (on-read (socket tls) #'tls-client-rx))))
+      (on-read (socket tls) #'tls-client-rx tls))))
 
 (defun get-version (hello)
-  (format t "get version from ~a packet~%" (type-of hello))
   (when (or (typep hello 'server-hello)
 	    (typep hello 'client-hello))
     (loop for ext in (extensions hello)
@@ -593,8 +603,6 @@
 	     :handle-final-block t
 	     :ciphertext-end (- (length ciphertext) 16))
 	  (declare (ignore consumed produced)))
-
-	(format t "plaintext: ~a~%" (ironclad:byte-array-to-hex-string plaintext))
 
 	(let ((state (state tls))
 	      (type (tls-content->class (content-type hdr))))

@@ -88,14 +88,11 @@
 
 (defgeneric find-handshake-class (handshake-type protocol-version))
 (defmethod find-handshake-class (handshake-type protocol-version)
-  (format t "TLS-? HANDSHAKE TYPE ~a~%" handshake-type)
   (ecase handshake-type
     (1 'client-hello)
     (2 'server-hello)))
 
-(defmethod find-handshake-class
-    (handshake-type (protocol-version (eql +TLS-1.3+)))
-  (format t "TLS-1.3 HANDSHAKE TYPE ~a~%" handshake-type)
+(defmethod find-handshake-class (handshake-type (protocol-version (eql +TLS-1.3+)))
   (ecase handshake-type
     (1 'client-hello)
     (2 'server-hello)
@@ -106,7 +103,6 @@
     (20 'finished)))
 
 (defmethod find-handshake-class (handshake-type (protocol-version (eql +TLS-1.2+)))
-  (format t "TLS-1.2 HANDSHAKE TYPE ~a~%" handshake-type)
   (ecase handshake-type
     (1 'client-hello)
     (2 'server-hello)
@@ -388,7 +384,6 @@
    (find-ec-curve-type curve-type)))
 
 (defun find-ec-curve-type (curve-type)
-  (format t "curve type = ~a~%" curve-type)
   (case curve-type
     (1 'ec-explicit-prime)
     (2 'ec-explicit-char2)
@@ -438,7 +433,6 @@
   ((algorithm u16))
   (:dispatch
    (progn
-     (format t "ALGORITHM ~4,'0x~%" algorithm)
      (cond
        ((= algorithm +rsa-pkcs1-sha256+) 'rsa-pkcs1-sha256-signature)
        ((= algorithm +rsa-pkcs1-sha384+) 'rsa-pkcs1-sha384-signature)

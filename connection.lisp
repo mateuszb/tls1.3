@@ -11,16 +11,16 @@
    (tx-data :initform (make-binary-ring-stream 8192) :accessor tx-data-stream)
    (records :initform nil :accessor tls-records)
    (state :initform nil :initarg :state :accessor state)
-   (pubkey :initform nil :accessor public-key)
-   (seckey :initform nil :accessor private-key)
-   (peer-pubkey :initform nil :accessor peer-key)
+   (pubkey :initform nil :accessor pubkey)
+   (seckey :initform nil :accessor privkey)
+   (peer-key-exchange-key :initform nil :accessor peer-key-exchange-key)
 
    (peername :initform nil :accessor peername :initarg :peername)
 
-   (cipher :accessor cipher)
-   (hashalgo :accessor hash-scheme)
-   (sigalgo :accessor signature-scheme)
-   (elliptic-curve :accessor tls-ec)
+   (cipher :initform nil :accessor cipher)
+   (hashalgo :initform nil :accessor hash-scheme)
+   (sigalgo :initform nil :accessor signature-scheme)
+   (elliptic-curve :initform nil :accessor tls-ec)
 
    (key-exchange-mode :accessor key-exchange-mode)
 
@@ -55,6 +55,11 @@
    (client-random :accessor client-random)
    (server-random :accessor server-random)))
 
+(defmethod print-object ((obj tls-connection) stream)
+  (with-slots (state pubkey seckey cipher hashalgo sigalgo) obj
+    (format stream "state=~a, pubkey=~a, seckey=~a, cipher=~a, hashalgo=~a, sigalgo=~a"
+	    state pubkey seckey cipher hashalgo sigalgo)))
+
 (defclass tls12-connection (tls-connection)
   ((protocol :initform +TLS-1.2+ :accessor protocol)
    (my-mac-key :initform nil :accessor my-mac-key)
@@ -86,17 +91,24 @@
    (peer-app-key :accessor peer-app-key)
    (peer-app-iv :accessor peer-app-iv)))
 
-(defun make-tls-connection (host
-			    socket
-			    state
-			    data
-			    accept-fn
-			    read-fn
-			    write-fn
-			    alert-fn
-			    disconnect-fn)
+(defun make-tls-connection
+    (host socket state data accept-fn read-fn
+     write-fn alert-fn disconnect-fn)
   (make-instance 'tls-connection
 		 :peername host
+		 :socket socket
+		 :state state
+		 :data data
+		 :accept-fn accept-fn
+		 :read-fn read-fn
+		 :write-fn write-fn
+		 :alert-fn alert-fn
+		 :disconnect-fn disconnect-fn))
+
+(defun make-server-tls-connection
+    (socket state data accept-fn read-fn
+     write-fn alert-fn disconnect-fn)
+  (make-instance 'tls13-connection
 		 :socket socket
 		 :state state
 		 :data data
