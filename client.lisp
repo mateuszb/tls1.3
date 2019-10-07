@@ -54,7 +54,7 @@
 	(rplaca tail hd))))
   (car *dispatchers*))
 
-(defun client-connect (host port)
+(defun client-connect (host port &optional connect-fn read-fn write-fn disconnect-fn)
   (let ((socket (make-tcp-socket t)))
     (let ((dispatcher (get-next-dispatcher)))
       (unless dispatcher
@@ -66,16 +66,27 @@
 	  (format t "connecting...~%")))
 
       (with-dispatcher ((car dispatcher))
-	(on-write socket #'client-socket-connected host)
+	(on-write socket #'client-socket-connected
+		  (list :host host
+			:connector connect-fn
+			:reader read-fn
+			:writer write-fn
+			:disconnector disconnect-fn))
 	(on-disconnect socket #'client-socket-disconnected))))
   (values))
 
 (defun client-socket-connected (ctx event)
   (declare (ignorable event))
-  (let ((socket (context-handle ctx))
-	(host (context-data ctx)))
-    (let ((conn (make-tls-connection host socket :CLIENT-HELLO
-				     ctx nil nil nil nil nil)))
+  (let* ((socket (context-handle ctx))
+	 (data (context-data ctx))
+	 (host (getf data :host))
+	 (readfn (getf data :reader))
+	 (writefn (getf data :writer))
+	 (connectfn (getf data :connector))
+	 (disconnectfn (getf data :disconnector)))
+    (let ((conn (make-tls-connection
+		 host socket :CLIENT-HELLO
+		 ctx connectfn readfn writefn nil disconnectfn)))
       ;; associate connection data with the socket
       (setf (context-data ctx) conn)
       ;; push client hello packet onto the transmit queue
@@ -86,27 +97,62 @@
 
 (defun tls-client-rx (ctx event)
   "Top level client read notification handler to plug into the reactor."
-  (declare (ignore event))
+  (declare (ignore event)
+	   (optimize (debug 3) (speed 0)))
   (let* ((sd (context-handle ctx))
 	 (nbytes (socket:get-rxbytes sd))
 	 (tls (context-data ctx))
 	 (*mode* :SERVER)
 	 (*version* (tls-version tls)))
-    (with-slots (rx rxbuf version state records tlsrx socket) tls
+    (with-slots (rx rxbuf version state records pending tlsrx socket) tls
       (handler-case
 	  (progn
 	    ;; read pending bytes from the socket into the tls buffer
 	    (rx-into-buffer sd (stream-buffer rx) nbytes)
 
-	    ;; read the record header (5 bytes) from the rx queue
-	    ;; and push it to the records list.
+	    (format t "stream size = ~a after attempting to read ~a bytes~%"
+		    (stream-size rx) nbytes)
+
+	    ;; when reading packets, we need to check two scenarios
+	    ;; scenario 1: no partial record header is present
+	    ;;      - we check if the stream has at least 5 bytes
+	    ;;        and read the record header (5 bytes)
+	    ;;      - we check if the record is complete and
+	    ;;        transfer it between buffers if so.
+	    ;;        otherwise we put the partial header on
+	    ;;        the pending list
+	    ;;
+	    ;; scenario 2: there is a partial record header present
+	    ;;      - we check if the new stream size is enough
+	    ;;        to transfer the entire record. if we have
+	    ;;        enough data we transfer the record and remove
+	    ;;        partial record from the list
+	    ;;
+	    ;; invariant: there is at most one pending record header
+
+	    ;; scenario 2
+	    (when pending
+	      (let ((hdr pending))
+		(cond
+		  ((>= (stream-size rx) (size hdr))
+		   (format t "completed pending record of size ~a~%" (size hdr))
+		   (setf (tls-records tls) (append records (list hdr)))
+		   (transfer-rx-record tls hdr)
+		   (setf pending nil))
+		  (t
+		   (format t "not enough data to complete the pending record~%")
+		   (return-from tls-client-rx)))))
+
+	    ;; scenario 1
 	    (loop
+	       while (not pending)
 	       while (>= (stream-size rx) 5)
 	       do
 		 (let ((hdr (read-value 'tls-record rx)))
+		   (format t "processing header of content type ~a and length ~a~%"
+			   (content-type hdr) (size hdr))
 		   ;; sanity check the record header and only allow
-		   ;; TLS-1.2 because the field is obsoleted. anything
-		   ;; less than TLS 1.2 is dropped
+		   ;; certain versions in the version field
 		   (unless (and
 			    (valid-content-p (content-type hdr))
 			    (valid-version-p (protocol-version hdr)))
@@ -116,13 +162,17 @@
 		     (on-write sd #'send-protocol-alert tls)
 		     (return-from tls-client-rx))
 
-		   ;; deserialize the header
-		   (setf (tls-records tls) (append records (list hdr)))
-
 		   (cond
-		     ;; check if the ring buffer has enough data for a
-		     ;; complete record and if so, process it immediately
+		     ;; check if the ring buffer has enough data for the processing
+		     ;; of a complete record at the head of the pending list
 		     ((>= (stream-size rx) (size hdr))
+
+		      ;; append the header to the records list
+		      (setf (tls-records tls) (append records (list hdr)))
+
+		      ;; TODO: remove the header from the pending list if it was on one?
+		      ;; TODO: this needs to be redesigned...
+
 		      ;; here, we need to read the packet bytes and transfer
 		      ;; them into another buffer that is aggregating
 		      ;; fragments into complete higher level packets.  we
@@ -131,24 +181,33 @@
 
 		      ;; transfer the record bytes from the RX stream into
 		      ;; TLS-RX de-encapsulating from the record layer
+		      (format t "we have enough bytes to transfer record of ~a bytes~%"
+			      (size hdr))
 		      (transfer-rx-record tls hdr))
 
 		     ;; if not enough data present, we need to wait for
 		     ;; another read event to continue filling the record
 		     ;; in such case we terminate the loop and start
 		     ;; processing completed packets
-		     ((< (stream-size rx) (size hdr)) (loop-finish)))))
+		     ((< (stream-size rx) (size hdr))
+		      (format t "not enough bytes in the buffer for the record of ~a bytes~%"
+			      (size hdr))
+		      (format t "buffer has ~a bytes of data~%" (stream-size rx))
+		      (setf pending hdr)
+		      (loop-finish)))))
 
 	    ;; process de-encapsulated records until we
 	    ;; reach the end of the list
 	    (loop
 	       for hdr in records
 	       do
+		 (format t "record list=~a~%" records)
 		 (let ((rectyp (get-record-content-type hdr))
 		       (msg nil))
 		   (when (eq (type-of tls) 'tls-connection)
 		     (setf msg (read-value rectyp tlsrx))
 		     (let* ((ver (get-version msg)))
+		       (format t "~a version = ~x~%" rectyp ver)
 		       (cond
 			 ((= ver +TLS-1.2+)
 			  (setf (context-data ctx)
@@ -163,22 +222,19 @@
 				version +TLS-1.3+)
 
 			  ;; remove all other keys different than curve 25519
-			  (let ((pubkeys
-				 (cdar
-				  (delete-if-not
-				   (lambda (x) (eq x :curve25519))
-				   (pubkey tls) :key #'car)))
-				(privkeys
-				 (cdar
-				  (delete-if-not
-				   (lambda (x) (eq x :curve25519))
-				   (privkey tls) :key #'car))))
+			  (let ((pubkeys (cdar (delete-if-not
+						(lambda (x) (eq x :curve25519))
+						(pubkey tls) :key #'car)))
+				(privkeys (cdar (delete-if-not
+						 (lambda (x) (eq x :curve25519))
+						 (privkey tls) :key #'car))))
 			    (setf (slot-value tls 'pubkey) pubkeys)
 			    (setf (slot-value tls 'seckey) privkeys)))
 
-			 (t (on-write socket #'send-protocol-alert tls)
-			    (del-read socket)
-			    (return-from tls-client-rx)))))
+			 (t
+			  (on-write socket #'send-protocol-alert tls)
+			  (del-read socket)
+			  (return-from tls-client-rx)))))
 
 		   (cond
 		     ((= *version* +TLS-1.3+)
@@ -205,18 +261,19 @@
 			    (read-value rectyp tlsrx))
 			   (otherwise
 			    (let ((msg (decrypt-record tls hdr)))
-			      (format t "msg arrived: ~a~%" msg)
 			      (client-process-record tls msg)))))
 			(otherwise
 			 (cond
 			   ((not (null msg))
+			    (format t "processing ~a message~%" (type-of msg))
 			    (client-process-record tls msg))
 			   (t
 			    (let ((msg (read-value rectyp tlsrx)))
-			      (client-process-record tls msg)))))))))
-		 (pop records)
-		 (format t "stream size after processing ~a~%"
-			 (stream-size tlsrx))))
+			      (client-process-record tls msg))))))))
+		   (pop records)
+		   (format t "pending record list after pop=~a~%" records)
+		   (format t "stream size after processing ~a~%"
+			   (stream-size tlsrx)))))
 
 	(alert-arrived (a)
 	  (with-slots (alert) a
@@ -310,10 +367,13 @@
 (defgeneric client-process-record (tls msg))
 
 (defmethod client-process-record ((tls tls12-connection) msg)
+  (format t "tls-1.2: message type ~a~%" (type-of msg))
   (etypecase msg
     (vector
-     ;; do nothing?
-     (format t "Application data?~%"))
+     (format t "Application data arrived~%")
+     ;; notify the client if callback is present?
+     (when (read-fn tls)
+       (funcall (read-fn tls) tls msg)))
 
     (server-hello
      (setf (cipher tls) (selected-cipher msg))
@@ -365,7 +425,8 @@
 
     (finished
      ;; TODO: call client callback here?
-     )
+     (when (connect-fn tls)
+       (funcall (connect-fn tls) tls)))
 
     (server-hello-done
      (write-value 'server-hello-done (digest-stream tls) msg)
@@ -485,6 +546,7 @@
 	     (my-app-iv tls) civ)))
 
     (t
+     ;; notify the client callback handler that there is new data
      (when (plusp (stream-size (rx-data-stream tls)))
        (when (read-fn tls)
 	 (funcall (read-fn tls)

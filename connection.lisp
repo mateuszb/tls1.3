@@ -10,6 +10,7 @@
    (rx-data :initform (make-binary-ring-stream 8192) :accessor rx-data-stream)
    (tx-data :initform (make-binary-ring-stream 8192) :accessor tx-data-stream)
    (records :initform nil :accessor tls-records)
+   (pending :initform nil :accessor tls-pending)
    (state :initform nil :initarg :state :accessor state)
    (pubkey :initform nil :accessor pubkey)
    (seckey :initform nil :accessor privkey)
