@@ -176,63 +176,75 @@
   (declare (ignore event))
   (let* ((sd (context-handle ctx))
 	 (nbytes (socket:get-rxbytes sd))
-	 (*mode* :SERVER))
-    (let ((tls (context-data ctx)))
+	 (*mode* :SERVER)
+	 (tls (context-data ctx)))
+    (with-slots (rx rxbuf pending records) tls
       (handler-case
-       (with-slots (rx rxbuf) tls
-	 ;; read pending bytes from the socket into the tls buffer
-	 (rx-into-buffer sd (stream-buffer rx) nbytes)
+	  (progn
+	    ;; read pending bytes from the socket into the tls buffer
+	    (rx-into-buffer sd (stream-buffer rx) nbytes)
 
-	 ;; read the record header (5 bytes) from the rx queue
-	 ;; and push it to the records list.
-	 (loop
-	    while (>= (stream-size rx) 5)
-	    do
-	      (let ((hdr (read-value 'tls-record rx)))
-		;; sanity check the record header and only allow
-		;; TLS-1.2 because the field is obsoleted. anything
-		;; less than TLS 1.2 is dropped
-		(format t "content-type: ~a~%" (content-type hdr))
-		(format t "protocol ver: ~2,'0x~%" (protocol-version hdr))
-		(unless (and (valid-content-p (content-type hdr))
-			     (valid-version-p (protocol-version hdr)))
-
-		  ;; stop reading from this socket
-		  (del-read (socket tls))
-		  ;; on next write, we send the protocol alert
-		  (on-write sd #'send-protocol-alert tls)
-		  (return-from tls-rx))
-
-		(setf (tls-records tls)
-		      (append (tls-records tls) (list hdr)))
-
+	    (when pending
+	      (let ((hdr pending))
 		(cond
-		  ;; check if the ring buffer has enough data for a
-		  ;; complete record and if so, process it immediately
 		  ((>= (stream-size rx) (size hdr))
-		   ;; here, we need to read the packet bytes and transfer
-		   ;; them into another buffer that is aggregating
-		   ;; fragments into complete higher level packets.  we
-		   ;; can't read the packet yet because it could have
-		   ;; been fragmented across many records
+		   (setf records (append records (list hdr)))
+		   (transfer-rx-record tls hdr)
+		   (setf pending nil))
+		  (t (return-from tls-rx)))))
+	    
+	    ;; read the record header (5 bytes) from the rx queue
+	    ;; and push it to the records list.
+	    (loop
+	       while (not pending)
+	       while (>= (stream-size rx) 5)
+	       do
+		 (let ((hdr (read-value 'tls-record rx)))
+		   ;; sanity check the record header and only allow
+		   ;; TLS-1.2 because the field is obsoleted. anything
+		   ;; less than TLS 1.2 is dropped
+		   (format t "content-type: ~a~%" (content-type hdr))
+		   (format t "protocol ver: ~2,'0x~%" (protocol-version hdr))
+		   (unless (and (valid-content-p (content-type hdr))
+				(valid-version-p (protocol-version hdr)))
 
-		   ;; transfer the record bytes from the RX stream into
-		   ;; TLS-RX de-encapsulating from the record layer
-		   (let ((*mode* :CLIENT))
-		     (transfer-rx-record tls hdr)))
+		     ;; stop reading from this socket
+		     (del-read (socket tls))
+		     ;; on next write, we send the protocol alert
+		     (on-write sd #'send-protocol-alert tls)
+		     (return-from tls-rx))
 
-		  ;; if not enough data present, we need to wait for
-		  ;; another read event to continue filling the record
-		  ((< (stream-size rx) (size hdr)) (loop-finish)))))
+		   (setf (tls-records tls)
+			 (append (tls-records tls) (list hdr)))
 
-	 ;; process de-encapsulated records until we reach the
-	 ;; end of the list or an incomplete record
-	 (loop
-	    for hdr in (tls-records tls)
-	    do
-	      (server-process-record tls)
-	      (pop (tls-records tls))))
+		   (cond
+		     ;; check if the ring buffer has enough data for a
+		     ;; complete record and if so, process it immediately
+		     ((>= (stream-size rx) (size hdr))
+		      ;; here, we need to read the packet bytes and transfer
+		      ;; them into another buffer that is aggregating
+		      ;; fragments into complete higher level packets.  we
+		      ;; can't read the packet yet because it could have
+		      ;; been fragmented across many records
 
+		      ;; transfer the record bytes from the RX stream into
+		      ;; TLS-RX de-encapsulating from the record layer
+		      (let ((*mode* :CLIENT))
+			(transfer-rx-record tls hdr)))
+
+		     ;; if not enough data present, we need to wait for
+		     ;; another read event to continue filling the record
+		     ((< (stream-size rx) (size hdr))
+		      (setf pending hdr)
+		      (loop-finish)))))
+
+	    ;; process de-encapsulated records until we reach the
+	    ;; end of the list or an incomplete record
+	    (loop
+	       for hdr in records
+	       do
+		 (server-process-record tls)
+		 (pop records)))
 
 	(alert-arrived (a)
 	  (with-slots (alert) a

@@ -136,7 +136,7 @@
 		(cond
 		  ((>= (stream-size rx) (size hdr))
 		   (format t "completed pending record of size ~a~%" (size hdr))
-		   (setf (tls-records tls) (append records (list hdr)))
+		   (setf records (append records (list hdr)))
 		   (transfer-rx-record tls hdr)
 		   (setf pending nil))
 		  (t
