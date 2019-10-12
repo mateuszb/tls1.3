@@ -33,12 +33,21 @@
     (make-instance 'curve25519-keypair :type :curve25519 :public-key y)))
 
 (defun make-curve25519-keypair ()
-  (let* ((kp (ironclad:generate-key-pair :curve25519)))
+  (multiple-value-bind (kpriv kpub) (ironclad:generate-key-pair :curve25519)
+    #+debug
+    (format t "my key pair:~%private.x=~a,~%private.y=~a~%public.y=~a~%"
+     (ironclad:byte-array-to-hex-string
+      (ironclad:curve25519-key-x kpriv))
+     (ironclad:byte-array-to-hex-string
+      (ironclad:curve25519-key-y kpriv))
+     (ironclad:byte-array-to-hex-string
+      (ironclad:curve25519-key-y kpub)))
+
     (make-instance
      'curve25519-keypair
      :type :curve25519
-     :private-key (octets-to-integer (ironclad:curve25519-key-x kp) 0 32)
-     :public-key (octets-to-integer (ironclad:curve25519-key-y kp) 0 32))))
+     :private-key (octets-to-integer (ironclad:curve25519-key-x kpriv) 0 32)
+     :public-key (octets-to-integer (ironclad:curve25519-key-y kpub) 0 32))))
 
 (defgeneric public-key-bytes (keypair))
 (defgeneric private-key-bytes (keypair))
@@ -58,17 +67,19 @@
 (defmethod private-key-bytes ((kp curve25519-keypair))
   (let ((bytes (make-array 32 :element-type '(unsigned-byte 8))))
     (loop
-       for b across (integer-to-octets (private-key kp))
        for i from 0 below 32
-       do (setf (aref bytes i) b))
+       for j from 248 downto 0 by 8
+       with v = (private-key kp)
+       do (setf (aref bytes i) (ldb (byte 8 j) v)))
     bytes))
 
 (defmethod public-key-bytes ((kp curve25519-keypair))
   (let ((bytes (make-array 32 :element-type '(unsigned-byte 8))))
     (loop
-       for b across (integer-to-octets (public-key kp))
        for i from 0 below 32
-       do (setf (aref bytes i) b))
+       for j from 248 downto 0 by 8
+       with v = (public-key kp)
+       do (setf (aref bytes i) (ldb (byte 8 j) v)))
     bytes))
 
 (defgeneric diffie-hellman (n key))
