@@ -39,6 +39,7 @@
    'client-hello
    :session-id session-id
    :ciphers supported-ciphers
+   :random-bytes (ironclad:random-data 32)
    :compression '(0)
    :extensions extensions
    :handshake-type +CLIENT-HELLO+
@@ -49,11 +50,10 @@
 	  (reduce #'+ (mapcar #'tls-extension-size extensions)))))
 
 (defun make-server-hello (selected-cipher session-id extensions)
-  (format t "extensions length = ~a~%"
-	  (reduce #'+ (mapcar #'tls-extension-size extensions)))
   (make-instance 'server-hello
 		 :session-id session-id
 		 :selected-cipher selected-cipher
+		 :random-bytes (ironclad:random-data 32)
 		 :handshake-type +SERVER-HELLO+
 		 :extensions extensions
 		 :size (+
