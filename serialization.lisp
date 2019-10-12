@@ -138,12 +138,19 @@
        (defclass ,name ,superclasses
 	 ,(mapcar #'slot->defclass-slot slots))
 
+       (defmethod print-object ((,objectvar ,name) ,streamvar)
+	 (print-unreadable-object (,objectvar ,streamvar :type t)
+	   (with-slots ,(new-class-all-slots slots superclasses) ,objectvar
+	     ,@(mapcar
+		#'(lambda (x)
+		    `(format t "~a = ~a~%" ',(first x) ,(first x))) slots))))
+
        ,read-method
 
        (defmethod write-object progn ((,objectvar ,name) ,streamvar)
-		  (declare (ignorable ,streamvar))
-		  (with-slots ,(new-class-all-slots slots superclasses) ,objectvar
-		    ,@(mapcar #'(lambda (x) (slot->write-value x streamvar)) slots))))))
+	  (declare (ignorable ,streamvar))
+	  (with-slots ,(new-class-all-slots slots superclasses) ,objectvar
+	    ,@(mapcar #'(lambda (x) (slot->write-value x streamvar)) slots))))))
 
 (defmacro define-binary-class (name (&rest superclasses) slots)
   (with-gensyms (objectvar streamvar)
