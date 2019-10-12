@@ -97,44 +97,51 @@
 			(plusp (queue-count (tx-queue tls)))))
 	 do
 	   (handler-case
-	       (progn
-		 (let ((nsent (tx-from-buffer
-			       sd (stream-buffer tx) (stream-size tx)))))
-		 (when (plusp (queue-count (tx-queue tls)))
-		  (let ((min-xfer (+ 1 5 16))
-			(free-space (alien-ring:ring-buffer-available (stream-buffer tx))))
-		    (when (> free-space min-xfer)
-		      (let ((elem (queue-peek (tx-queue tls))))
-			(let ((remaining (- (length (cdr elem)) (car elem))))
-			  (let ((xfer-size (min (- free-space min-xfer) remaining)))
-			    (let ((record (make-instance 'tls-record
-							 :size (+ 16 1 xfer-size)
-							 :content-type +RECORD-APPLICATION-DATA+)))
-			      (write-value 'tls-record (tx-stream tls) record)
-			      (let ((next-xfer-seq (subseq (cdr elem) (car elem) (+ (car elem) xfer-size))))
-				(multiple-value-bind (ciphertext authtag)
-				    (encrypt-data tls next-xfer-seq)
-				  (write-sequence ciphertext (tx-stream tls))
-				  (write-sequence authtag (tx-stream tls)))))
+	       (let* ((xfer-requested (stream-size tx))
+		      (txbuf (stream-buffer tx))
+		      (nsent (tx-from-buffer sd txbuf xfer-requested)))
+		 (when (/= nsent xfer-requested)
+		   (format t "WARNING: TODO implement?~%"))
 
-			    (incf (car elem) xfer-size)
-			    (when (= (car elem) (length (cdr elem)))
-			      (dequeue (tx-queue tls))))))))))
+		 (when (plusp (queue-count (tx-queue tls)))
+		   (let ((min-xfer (+ 1 5 16))
+			 (free-space (alien-ring:ring-buffer-available (stream-buffer tx))))
+		     (when (> free-space min-xfer)
+		       (let ((elem (queue-peek (tx-queue tls))))
+			 (let ((remaining (- (length (cdr elem)) (car elem))))
+			   (let ((xfer-size (min (- free-space min-xfer) remaining)))
+			     (let ((record (make-instance 'tls-record
+							  :size (+ 16 1 xfer-size)
+							  :content-type +RECORD-APPLICATION-DATA+)))
+			       (write-value 'tls-record (tx-stream tls) record)
+			       (let ((next-xfer-seq (subseq (cdr elem) (car elem) (+ (car elem) xfer-size))))
+				 (multiple-value-bind (ciphertext authtag)
+				     (encrypt-data tls next-xfer-seq)
+				   (write-sequence ciphertext (tx-stream tls))
+				   (write-sequence authtag (tx-stream tls)))))
+
+			     (incf (car elem) xfer-size)
+			     (when (= (car elem) (length (cdr elem)))
+			       (dequeue (tx-queue tls))))))))))
+
+	     (socket:socket-write-error ()
+	       (format t "socket write error~%")
+	       (rem-handle (context-handle ctx))
+	       (return-from tls-tx))
 
 	     (operation-would-block ()
 	       (format t "operation would block~%")
-	       (loop-finish))
+	       (return-from tls-tx))
 
 	     (operation-interrupted ()
-	       (format t "operation interrupted~%"))))
+	       (format t "operation interrupted~%")
+	       (return-from tls-tx))))
 
       (when (alien-ring:ring-buffer-empty-p (stream-buffer tx))
 	;; no more data to send. disable write notifications
-	(format t "disabling write notification~%")
 	(del-write sd)))))
 
 (defun send-close-notify (ctx evt)
-  (format t "sending close notify~%")
   (let* ((sd (context-handle ctx))
 	 (tls (context-data ctx)))
     (send-alert tls +ALERT-WARNING+ +CLOSE-NOTIFY+)
@@ -143,7 +150,6 @@
     (disconnect sd)))
 
 (defun send-protocol-alert (ctx evt)
-  (format t "sending protocol alert~%")
   (let* ((sd (context-handle ctx))
 	 (tls (context-data ctx)))
     (send-alert tls +ALERT-FATAL+ +PROTOCOL-VERSION+)
@@ -152,7 +158,6 @@
     (disconnect sd)))
 
 (defun send-insufficient-security-alert (ctx evt)
-  (format t "send insufficient security alert~%")
   (let* ((sd (context-handle ctx))
 	 (tls (context-data ctx)))
     (send-alert tls +ALERT-FATAL+ +INSUFFICIENT-SECURITY+)
@@ -192,7 +197,7 @@
 		   (transfer-rx-record tls hdr)
 		   (setf pending nil))
 		  (t (return-from tls-rx)))))
-	    
+
 	    ;; read the record header (5 bytes) from the rx queue
 	    ;; and push it to the records list.
 	    (loop
@@ -203,8 +208,6 @@
 		   ;; sanity check the record header and only allow
 		   ;; TLS-1.2 because the field is obsoleted. anything
 		   ;; less than TLS 1.2 is dropped
-		   (format t "content-type: ~a~%" (content-type hdr))
-		   (format t "protocol ver: ~2,'0x~%" (protocol-version hdr))
 		   (unless (and (valid-content-p (content-type hdr))
 				(valid-version-p (protocol-version hdr)))
 
@@ -240,19 +243,17 @@
 
 	    ;; process de-encapsulated records until we reach the
 	    ;; end of the list or an incomplete record
-	    (loop
-	       for hdr in records
-	       do
-		 (server-process-record tls)
+	    (loop for hdr in records
+	       do (server-process-record tls)
 		 (pop records)))
 
 	(alert-arrived (a)
 	  (with-slots (alert) a
-	    (format t "alert arrived: ~a:~a~%" (level alert) (description alert))
+	    (format t "~a~%" a)
 	    (on-write (socket tls) #'send-close-notify)))
 
 	(socket-eof ()
-	  (format t "disconnecting on eof~%")
+	  (format t "closing connection on socket ~a~%" (socket tls))
 	  (rem-handle (socket tls))
 	  (disconnect (socket tls)))
 
@@ -264,11 +265,6 @@
   (with-slots (rx tlsrx) tls
     (assert (>= (alien-ring::ring-buffer-available (stream-buffer rx))
 		(size hdr)))
-    #+debug
-    (format t "we have enough bytes available in the ring buffer~%")
-    #+debug
-    (format t "record content type = ~a~%" (get-record-content-type hdr))
-
     ;; copy the bytes without deserializing/serializing
     (let ((tmpbuf (make-array (size hdr) :element-type '(unsigned-byte 8))))
       (read-sequence tmpbuf rx)
@@ -314,10 +310,8 @@
 (defun server-process-record (tls)
   (with-slots (tlsrx state records) tls
     (let ((content-type (get-record-content-type (first records))))
-      (format t "STATE=~a~%" state)
       (case state
 	(:CLIENT-HELLO
-	 (format t "processing record...~%")
 	 ;; peek at the sequence and compute the hash
 	 (let ((client-hello (let ((*mode* :CLIENT))
 			       (read-value content-type tlsrx))))
@@ -347,7 +341,7 @@
 	   (format t "record type=~a~%" (type-of record))
 	   (etypecase record
 	     (alert
-	      (format t "alert arrived: ~a:~a~%" (level record) (description record)))
+	      (format t "~a~%" record))
 
 	     (change-cipher-spec
 	      (format t "peer running in compatibility mode. ignoring cipher change packet~%"))
@@ -440,24 +434,19 @@
 	      (push
 	       (make-server-keyshare
 		supported-group
-		(public-key-bytes (pubkey tls))
-		;(ironclad:curve25519-key-y (pubkey tls))
-		)
-	       exts))
+		(public-key-bytes (pubkey tls))) exts))
 
 	     (client-hello-key-share
 	      (let ((keyshare (find +x25519+ (key-shares ext) :key #'named-group :test #'=)))
 		(setf (peer-key-exchange-key tls)
 		      (make-curve25519-public-key (key-exchange keyshare))
-		      ;(ironclad:make-public-key :curve25519 :y (key-exchange keyshare))
 		      key-share-group (named-group keyshare))
 
 		;; diffie-hellman key exchange
 		(setf (shared-secret tls)
 		      (compute-dh-shared-secret tls))))
 	     (t
-	      (format t "unsupported client extension ~a = ~a~%"
-		      (extension-type ext) ext))))
+	      (format t "~a~%" ext))))
 
       (unless (= supported-group key-share-group)
 	(error 'key-share-and-supported-groups-dont-match))
@@ -465,8 +454,8 @@
 
       (let ((server-hello (make-server-hello cipher (session-id client-hello) exts)))
 	;; calculate digest of client hello and server hello
-	(write-value (type-of client-hello) (digest-stream tls) client-hello)
-	(write-value (type-of server-hello) (digest-stream tls) server-hello)
+	(update-digest tls client-hello)
+	(update-digest tls server-hello)
 
 	(multiple-value-bind (hs-secret ss skey siv cs ckey civ)
 	    (handshake-key-schedule
@@ -544,16 +533,16 @@
 	 (certmsg (make-server-certificate (bytes x509cert))))
 
     ;; update handshake digest
-    (write-value (type-of exts) (digest-stream tls) exts)
-    (write-value (type-of certmsg) (digest-stream tls) certmsg)
+    (update-digest tls exts)
+    (update-digest tls certmsg)
 
     (let ((signature (sign-certificate-verify tls)))
       (let ((cert-verify (make-certificate-verify signature)))
 	;; update the handshake digest with the certificate verify message
-	(write-value (type-of cert-verify) (digest-stream tls) cert-verify)
+	(update-digest tls cert-verify)
 
 	(let* ((finished (make-server-finished tls)))
-	  (write-value (type-of finished) (digest-stream tls) finished)
+	  (update-digest tls finished)
 
 	  (let* ((aead (make-aead-aes256-gcm (my-handshake-key tls)
 					     (my-handshake-iv tls)
@@ -615,34 +604,18 @@
 
 	(let* ((content-type-pos (scan-for-content-type plaintext))
 	       (type (tls-content->class (aref plaintext content-type-pos))))
-
-	  (case (state tls)
-	    (:SERVER-FINISHED
+	  (ecase type
+	    (handshake
 	     (with-input-from-sequence (in plaintext)
 	       (read-value type in)))
 
-	    (:NEGOTIATED
-	     (ecase type
-	       (handshake
-		(let ((msg))
-		  (with-input-from-sequence (in plaintext)
-		    (setf msg (read-value type in)))
-		  msg))
-	       (alert
-		(let ((alert))
-		  (with-input-from-sequence (in plaintext)
-		    (setf alert (read-value type in)))
-		  (with-slots (level description) alert
-		    (format t "alert ~a.~a arrived~%" level description)
-		    (error 'alert-arrived :alert alert))))
+	    (alert
+	     (with-input-from-sequence (in plaintext)
+	       (error 'alert-arrived :alert (read-value type in))))
 
-	       (application-data
-		;; write the application data to the decrypted RX stream
-		(write-sequence
-		 plaintext
-		 (rx-data-stream tls)
-		 :start 0 :end
-		 (1- (length plaintext))))))))))))
+	    (application-data
+	     (write-sequence
+	      plaintext (rx-data-stream tls) :start 0 :end (1- (length plaintext))))))))))
 
 (defun gen-aead-data (size)
   (with-output-to-byte-sequence (buf 5)
