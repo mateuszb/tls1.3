@@ -658,3 +658,19 @@
 		do (write-value (type-of msg) out msg))
 	     (write-value 'u8 out content-type))))
       (ironclad:encrypt-message gcm plaintext :associated-data aead-data))))
+
+(defun update-digest (tls message)
+  (format t "handshake digest: before update: ~a~%"
+	  (ironclad:byte-array-to-hex-string
+	   (ironclad:produce-digest
+	    (digest-stream tls))))
+
+  (format t "updating handshake digest with message type ~a:~%~a~%"
+	  (type-of message) message)
+
+  (write-value (type-of message) (digest-stream tls) message)
+
+  (format t "handshake digest: after update: ~a~%"
+	  (ironclad:byte-array-to-hex-string
+	   (ironclad:produce-digest
+	    (digest-stream tls)))))
