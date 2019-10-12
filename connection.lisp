@@ -57,6 +57,7 @@
    (client-random :accessor client-random)
    (server-random :accessor server-random)))
 
+#+off
 (defmethod print-object ((obj tls-connection) stream)
   (with-slots (state pubkey seckey cipher hashalgo sigalgo) obj
     (format stream "state=~a, pubkey=~a, seckey=~a, cipher=~a, hashalgo=~a, sigalgo=~a"
@@ -157,7 +158,7 @@
    (map '(simple-array (integer 0 255) (*)) #'char-code seq)
    content-type))
 
-(defmethod tls-write (tls (seq array) &optional (content-type +RECORD-APPLICATION-DATA+))
+(defmethod tls-write ((tls tls13-connection) (seq array) &optional (content-type +RECORD-APPLICATION-DATA+))
   (let* ((free-space (stream-space-available (tx-stream tls)))
 	 (minsize (+ 1 5 16))
 	 (xfer-size 0))
@@ -180,6 +181,36 @@
       (enqueue (cons 0 remaining) (tx-queue tls)))
     (on-write (socket tls) #'tls-tx)))
 
+(defmethod tls-write ((tls tls12-connection) data &optional content-type)
+  (declare (ignore content-type))
+  (let* ((len (length data))
+	 (key (my-key tls))
+	 (explicit-iv (ironclad:random-data 8))
+	 (salt-iv (my-iv tls))
+	 (plaintext nil)
+	 (combined-iv (concatenate '(vector (unsigned-byte 8)) salt-iv explicit-iv)))
+    (etypecase data
+      (string
+       (setf plaintext
+	     (make-array (length data)
+			 :element-type '(unsigned-byte 8)
+			 :initial-contents (map '(vector (unsigned-byte 8)) #'char-code data))))
+      (vector
+       (setf plaintext data)))
+
+    (let* ((nonce (get-out-nonce! tls))
+	   (aead (make-aead-aes256-gcm key combined-iv 0))
+	   (aead-data (tls12-make-aead-data nonce +RECORD-APPLICATION-DATA+ +TLS-1.2+ len))
+	   (ciphertext (ironclad:encrypt-message aead plaintext :associated-data aead-data))
+	   (rec (make-instance 'tls-record
+			       :size (+ 8 len 16)
+			       :content-type +RECORD-APPLICATION-DATA+)))
+      (write-value 'tls-record (tx-stream tls) rec)
+      (write-value 'raw-bytes (tx-stream tls) explicit-iv :size (length explicit-iv))
+      (write-sequence ciphertext (tx-stream tls))
+      (write-sequence (ironclad:produce-tag aead) (tx-stream tls))))
+  (on-write (socket tls) #'tls-tx))
+
 (defun alert->bytes (alert)
   (with-output-to-byte-sequence (out 2)
     (write-value 'alert out alert)))
@@ -199,8 +230,7 @@
       (t
        (format t "not encrypted alert~%")
        (write-value 'tls-record (tx-stream tls) hdr)
-       (write-value 'alert (tx-stream tls) alert))
-)))
+       (write-value 'alert (tx-stream tls) alert)))))
 
 (defun tls-close (tls)
   (send-alert tls +ALERT-WARNING+ +CLOSE-NOTIFY+))

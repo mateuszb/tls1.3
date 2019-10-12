@@ -68,4 +68,5 @@
    :start-server
    :tls-read
    :tls-write
-   :tls-close))
+   :tls-close
+   :client-connect))

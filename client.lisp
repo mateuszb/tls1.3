@@ -12,7 +12,8 @@
 	     (loop
 		do
 		  (let ((events (wait-for-events)))
-		    (dispatch-events events)))))
+		    (dispatch-events events))))
+	   )
       (format t "exiting thread ~a~%" sb-thread:*current-thread*)
       (format t "closing dispatcher ~a~%" dispatcher)
       (close-dispatcher dispatcher)
@@ -38,6 +39,9 @@
        :arguments (list disp)))
      *dispatchers*)))
 
+(defun client-loop-running-p ()
+  (not (null *dispatchers*)))
+
 (defun client-socket-disconnected (ctx event)
   (declare (ignorable ctx event))
   (let ((socket (context-handle ctx)))
@@ -45,13 +49,14 @@
     (disconnect socket)))
 
 (defun get-next-dispatcher ()
-  (when *dispatchers*
-    (let ((tail (last *dispatchers*)))
-      (let ((hd (car *dispatchers*))
-	    (rst (cdr *dispatchers*)))
-	(rplaca *dispatchers* (car rst))
-	(rplacd *dispatchers* (cdr rst))
-	(rplaca tail hd))))
+  (if (client-loop-running-p)
+      (let ((tail (last *dispatchers*)))
+	(let ((hd (car *dispatchers*))
+	      (rst (cdr *dispatchers*)))
+	  (rplaca *dispatchers* (car rst))
+	  (rplacd *dispatchers* (cdr rst))
+	  (rplaca tail hd)))
+      (start-client-loop))
   (car *dispatchers*))
 
 (defun client-connect (host port &optional connect-fn read-fn write-fn disconnect-fn)
@@ -702,32 +707,3 @@
 	  (write-value 'raw-bytes (tx-stream tls) explicit-iv :size (length explicit-iv))
 	  (write-sequence ciphertext (tx-stream tls))
 	  (write-sequence (ironclad:produce-tag aead) (tx-stream tls)))))))
-
-(defmethod tls12-write (tls data)
-  (let* ((len (length data))
-	 (key (my-key tls))
-	 (explicit-iv (ironclad:random-data 8))
-	 (salt-iv (my-iv tls))
-	 (plaintext nil)
-	 (combined-iv (concatenate '(vector (unsigned-byte 8)) salt-iv explicit-iv)))
-    (etypecase data
-      (string
-       (setf plaintext
-	     (make-array (length data)
-			 :element-type '(unsigned-byte 8)
-			 :initial-contents (map '(vector (unsigned-byte 8)) #'char-code data))))
-      (vector
-       (setf plaintext data)))
-
-    (let* ((nonce (get-out-nonce! tls))
-	   (aead (make-aead-aes256-gcm key combined-iv 0))
-	   (aead-data (tls12-make-aead-data nonce +RECORD-APPLICATION-DATA+ +TLS-1.2+ len))
-	   (ciphertext (ironclad:encrypt-message aead plaintext :associated-data aead-data))
-	   (rec (make-instance 'tls-record
-			       :size (+ 8 len 16)
-			       :content-type +RECORD-APPLICATION-DATA+)))
-      (write-value 'tls-record (tx-stream tls) rec)
-      (write-value 'raw-bytes (tx-stream tls) explicit-iv :size (length explicit-iv))
-      (write-sequence ciphertext (tx-stream tls))
-      (write-sequence (ironclad:produce-tag aead) (tx-stream tls))))
-  (on-write (socket tls) #'tls-tx))
