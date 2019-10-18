@@ -6,9 +6,11 @@
 
 (defun tls-p (secret seed rounds)
   (declare (optimize (speed 0) (debug 3)))
-  (format t "secret length = ~a~%" (length secret))
-  (format t "seed = ~a~%" seed)
-  (format t "rounds = ~a~%" rounds)
+  #+debug
+  (progn
+    (format t "secret length = ~a~%" (length secret))
+    (format t "seed = ~a~%" seed)
+    (format t "rounds = ~a~%" rounds))
   (flexi-streams:with-output-to-sequence (s :element-type '(unsigned-byte 8))
     (loop for i from 0 below rounds
        with a = seed

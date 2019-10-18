@@ -115,6 +115,7 @@
 	    ;; read pending bytes from the socket into the tls buffer
 	    (rx-into-buffer sd (stream-buffer rx) nbytes)
 
+	    #+debug
 	    (format t "stream size = ~a after attempting to read ~a bytes~%"
 		    (stream-size rx) nbytes)
 
@@ -140,11 +141,13 @@
 	      (let ((hdr pending))
 		(cond
 		  ((>= (stream-size rx) (size hdr))
+		   #+debug
 		   (format t "completed pending record of size ~a~%" (size hdr))
 		   (setf records (append records (list hdr)))
 		   (transfer-rx-record tls hdr)
 		   (setf pending nil))
 		  (t
+		   #+debug
 		   (format t "not enough data to complete the pending record~%")
 		   (return-from tls-client-rx)))))
 
@@ -154,6 +157,7 @@
 	       while (>= (stream-size rx) 5)
 	       do
 		 (let ((hdr (read-value 'tls-record rx)))
+		   #+debug
 		   (format t "processing header of content type ~a and length ~a~%"
 			   (content-type hdr) (size hdr))
 		   ;; sanity check the record header and only allow
@@ -186,6 +190,7 @@
 
 		      ;; transfer the record bytes from the RX stream into
 		      ;; TLS-RX de-encapsulating from the record layer
+		      #+debug
 		      (format t "we have enough bytes to transfer record of ~a bytes~%"
 			      (size hdr))
 		      (transfer-rx-record tls hdr))
@@ -195,8 +200,10 @@
 		     ;; in such case we terminate the loop and start
 		     ;; processing completed packets
 		     ((< (stream-size rx) (size hdr))
+		      #+debug
 		      (format t "not enough bytes in the buffer for the record of ~a bytes~%"
 			      (size hdr))
+		      #+debug
 		      (format t "buffer has ~a bytes of data~%" (stream-size rx))
 		      (setf pending hdr)
 		      (loop-finish)))))
@@ -206,12 +213,14 @@
 	    (loop
 	       for hdr in records
 	       do
+		 #+debug
 		 (format t "record list=~a~%" records)
 		 (let ((rectyp (get-record-content-type hdr))
 		       (msg nil))
 		   (when (eq (type-of tls) 'tls-connection)
 		     (setf msg (read-value rectyp tlsrx))
 		     (let* ((ver (get-version msg)))
+		       #+debug
 		       (format t "~a version = ~x~%" rectyp ver)
 		       (cond
 			 ((= ver +TLS-1.2+)
@@ -245,15 +254,16 @@
 		     ((= *version* +TLS-1.3+)
 		      (cond
 			((eq rectyp 'application-data)
-			 (format t "encrypted packet~%")
 			 (let ((msg (decrypt-record tls hdr)))
 			   (client-process-record tls msg)))
 			(t
 			 (cond
 			   ((not (null msg)) (client-process-record tls msg))
 			   (t
+			    #+debug
 			    (format t "will read ~a packet~%" rectyp)
 			    (let ((msg (read-value rectyp tlsrx)))
+			      #+debug
 			      (format t "unencrypted packet~%")
 			      (client-process-record tls msg)))))))
 
@@ -262,7 +272,6 @@
 			(:NEGOTIATED
 			 (case rectyp
 			   (change-cipher-spec
-			    (format t "reading change cipher spec~%")
 			    (read-value rectyp tlsrx))
 			   (otherwise
 			    (let ((msg (decrypt-record tls hdr)))
@@ -270,13 +279,16 @@
 			(otherwise
 			 (cond
 			   ((not (null msg))
+			    #+debug
 			    (format t "processing ~a message~%" (type-of msg))
 			    (client-process-record tls msg))
 			   (t
 			    (let ((msg (read-value rectyp tlsrx)))
 			      (client-process-record tls msg))))))))
 		   (pop records)
+		   #+debug
 		   (format t "pending record list after pop=~a~%" records)
+		   #+debug
 		   (format t "stream size after processing ~a~%"
 			   (stream-size tlsrx)))))
 
@@ -285,7 +297,7 @@
 	    (format t "alert arrived: ~a:~a~%" (level alert) (description alert))
 	    (on-write socket #'send-close-notify)))
 
-	(socket-eof ()
+	(socket-eof ()	  
 	  (format t "disconnecting on eof~%")
 	  (rem-handle socket)
 	  (disconnect socket))
@@ -372,10 +384,10 @@
 (defgeneric client-process-record (tls msg))
 
 (defmethod client-process-record ((tls tls12-connection) msg)
+  #+debug
   (format t "tls-1.2: message type ~a~%" (type-of msg))
   (etypecase msg
     (vector
-     (format t "Application data arrived~%")
      ;; notify the client if callback is present?
      (when (read-fn tls)
        (funcall (read-fn tls) tls msg)))
@@ -518,8 +530,7 @@
      (format t "alert arrived: ~a:~a~%"
 	     (level msg) (description msg)))
 
-    (change-cipher-spec
-     (format t "cipher: ~a~%" (cipher msg)))
+    (change-cipher-spec)
 
     (encrypted-extensions
      (write-value 'encrypted-extensions (digest-stream tls) msg))
