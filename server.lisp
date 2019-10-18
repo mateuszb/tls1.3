@@ -64,11 +64,15 @@
 	 (operation-would-block ())))))
 
 (defun rx-into-buffer (sd buf nbytes)
-  (let ((nrecvd 0))
-    (loop for loc in (alien-ring::ring-buffer-write-locations buf nbytes)
+  (let ((nrecvd 0)
+	(locs (alien-ring::ring-buffer-write-locations buf nbytes))
+	(occupied (alien-ring::ring-buffer-size buf))
+	(free (alien-ring::ring-buffer-available buf))
+	(capacity (alien-ring::ring-buffer-capacity buf)))
+    (loop for loc in locs
        do
 	 (let* ((bufaddr (sb-sys:sap+ (alien-ring::ring-buffer-ptr buf) (car loc)))
-		(ret (socket::receive sd (list bufaddr) (list nbytes))))
+		(ret (socket::receive sd (list bufaddr) (list (cdr loc)))))
 	   (alien-ring::ring-buffer-advance-wr buf ret)
 	   (incf nrecvd ret)
 	   (decf nbytes ret)))
@@ -263,7 +267,7 @@
 
 (defun transfer-rx-record (tls hdr)
   (with-slots (rx tlsrx) tls
-    (assert (>= (alien-ring::ring-buffer-available (stream-buffer rx))
+    (assert (>= (alien-ring::ring-buffer-available (stream-buffer tlsrx))
 		(size hdr)))
     ;; copy the bytes without deserializing/serializing
     (let ((tmpbuf (make-array (size hdr) :element-type '(unsigned-byte 8))))
