@@ -220,7 +220,6 @@
 	(hdr (make-instance 'tls-record :content-type +RECORD-ALERT+ :size 2)))
     (cond
       ((encrypted-p tls)
-       (format t "encrypted alert")
        (let ((record (make-instance 'tls-record :size (+ 16 1 2) :content-type +RECORD-APPLICATION-DATA+)))
 	(write-value 'tls-record (tx-stream tls) record)
 	(multiple-value-bind (ciphertext authtag)
@@ -228,7 +227,6 @@
 	  (write-sequence ciphertext (tx-stream tls))
 	  (write-sequence authtag (tx-stream tls)))))
       (t
-       (format t "not encrypted alert~%")
        (write-value 'tls-record (tx-stream tls) hdr)
        (write-value 'alert (tx-stream tls) alert)))))
 
