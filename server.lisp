@@ -60,6 +60,7 @@
 	       (on-read new-socket #'tls-rx newctx)
 	       (on-disconnect new-socket #'tls-disconnect))
 	     (go again))
+	 (socket-error ())
 	 (operation-interrupted () (go again))
 	 (operation-would-block ())))))
 
