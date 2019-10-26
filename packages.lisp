@@ -19,6 +19,7 @@
 		:operation-would-block
 		:operation-in-progress
 		:socket-error
+		:socket-read-error
 		:socket-eof
 		:make-tcp-listen-socket
 		:make-tcp-socket

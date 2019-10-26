@@ -12,8 +12,10 @@
 (defmethod handle-key ((s socket:socket))
   (socket::socket-fd s))
 
-(defun start-server
-    (cert-path key-path port accept-fn read-fn write-fn alert-fn disconnect-fn)
+(defun start-server (cert-path key-path
+		     port accept-fn
+		     read-fn write-fn
+		     alert-fn disconnect-fn)
   (let ((dispatcher (make-dispatcher))
 	(*connections* (make-hash-table))
 	(*version* +TLS-1.3+))
@@ -130,7 +132,7 @@
 			       (dequeue (tx-queue tls))))))))))
 
 	     (socket:socket-write-error ()
-	       (format t "socket write error~%")
+	       (format t "SOCKET WRITE ERROR~%")
 	       (rem-handle (context-handle ctx))
 	       (return-from tls-tx))
 
@@ -254,11 +256,27 @@
 
 	(alert-arrived (a)
 	  (with-slots (alert) a
-	    (format t "~a~%" a)
-	    (on-write (socket tls) #'send-close-notify)))
+	    (with-slots (level description) alert
+	      (cond
+		((and (= level 1) (= description 0))
+		 ;; do nothing. peer wont send us any more data.
+		 ;; finish sending and disconnect
+		 )
+
+		(t
+		 ;; any other alert? disconnect.
+		 (format t "~a~%" a)
+		 (on-write (socket tls) #'send-close-notify))))))
 
 	(socket-eof ()
-	  (format t "closing connection on socket ~a~%" (socket tls))
+	  (format t "end of connection on socket ~a~%" (socket tls))
+	  (rem-handle (socket tls))
+	  ;(disconnect (socket tls))
+	  )
+
+	(socket-read-error ()
+	  ;; read error?
+	  (format t "SOCKET READ ERROR!!!!~%")
 	  (rem-handle (socket tls))
 	  (disconnect (socket tls)))
 
