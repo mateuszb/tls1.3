@@ -108,7 +108,8 @@
 		      (txbuf (stream-buffer tx))
 		      (nsent (tx-from-buffer sd txbuf xfer-requested)))
 		 (when (/= nsent xfer-requested)
-		   (format t "WARNING: TODO implement?~%"))
+		   (format t "sent ~a when requesting ~a~%" nsent xfer-requested)
+		   (return-from tls-tx))
 
 		 (when (plusp (queue-count (tx-queue tls)))
 		   (let ((min-xfer (+ 1 5 16))
