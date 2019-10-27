@@ -111,6 +111,9 @@
 		   (format t "sent ~a when requesting ~a~%" nsent xfer-requested)
 		   (return-from tls-tx))
 
+		 (when (= nsent xfer-requested)
+		   (format t "sent ~a when requesting ~a~%" nsent xfer-requested))
+
 		 (when (plusp (queue-count (tx-queue tls)))
 		   (let ((min-xfer (+ 1 5 16))
 			 (free-space (alien-ring:ring-buffer-available (stream-buffer tx))))
